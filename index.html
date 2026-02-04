@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>THE UNFAIR: Meta Platformer (Mobile)</title>
+    <title>THE UNFAIR: Meta Platformer (Mobile V3)</title>
     <style>
         body {
             margin: 0;
@@ -19,6 +19,7 @@
             user-select: none;
             touch-action: none; /* Prevent scroll on mobile */
             -webkit-touch-callout: none;
+            -webkit-user-select: none;
         }
         canvas {
             box-shadow: 0 0 20px rgba(0,0,0,0.8);
@@ -33,8 +34,8 @@
 
 <script>
 /**
- * THE UNFAIR (Extended Mobile Version v2)
- * Optimized for Touch Controls
+ * THE UNFAIR (Extended Mobile Version v3)
+ * Optimized for Touch Controls & New Gimmicks
  */
 
 // --- Constants & Config ---
@@ -46,14 +47,14 @@ const CANVAS_HEIGHT = 600;
 const GRAVITY = 0.6;
 const FRICTION = 0.82;
 const ACCEL = 1.2;
-const JUMP_FORCE = 13; 
+const JUMP_FORCE = 13.5; // Slightly higher for mobile comfort
 const WALL_JUMP_FORCE_X = 10;
 const WALL_JUMP_FORCE_Y = 11;
 const MAX_SPEED = 7;
 
 // Storage Keys
-const STORAGE_KEY_DEATHS = 'unfair_death_history_v2'; 
-const STORAGE_KEY_COUNT = 'unfair_death_count_v2';
+const STORAGE_KEY_DEATHS = 'unfair_death_history_v3'; 
+const STORAGE_KEY_COUNT = 'unfair_death_count_v3';
 
 // Audio Context
 let audioCtx = null;
@@ -69,6 +70,9 @@ let glitchIntensity = 0;
 // Camera
 let cameraX = 0;
 
+// Persistence variables
+let spawnPoint = { x: 50, y: 400 };
+
 // Mocking Texts
 const MOCKERY = [
     "重力をご存知ない？",
@@ -79,7 +83,8 @@ const MOCKERY = [
     "惜しい！（大嘘）",
     "予測通りです",
     "開発者の思うツボ",
-    "セーブなんて無いよ"
+    "見えないものを見ようとして",
+    "後ろ！後ろ！"
 ];
 
 let lastMockery = "";
@@ -140,6 +145,14 @@ function playSound(type) {
         gain.gain.linearRampToValueAtTime(0, now + 0.5);
         osc.start(now);
         osc.stop(now + 0.5);
+    } else if (type === 'checkpoint') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, now);
+        osc.frequency.exponentialRampToValueAtTime(1760, now + 0.5);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.5);
+        osc.start(now);
+        osc.stop(now + 0.5);
     } else if (type === 'win') {
         osc.type = 'triangle';
         osc.frequency.setValueAtTime(440, now);
@@ -174,7 +187,7 @@ function startBGM() {
         gain.connect(audioCtx.destination);
         
         // Progress increases pitch/speed tension (Meta audio)
-        const progressFactor = Math.max(0, (player.x / 3000)); // Adjusted for longer level
+        const progressFactor = Math.max(0, (player.x / 3000)); 
         const pitchMod = 1 + (progressFactor * 0.5);
         
         osc.type = 'triangle';
@@ -204,7 +217,7 @@ function loadPersistence() {
 function saveDeath(x, y) {
     deathCount++;
     deathHistory.push({x: Math.round(x), y: Math.round(y)});
-    if (deathHistory.length > 150) deathHistory.shift();
+    if (deathHistory.length > 200) deathHistory.shift();
     
     localStorage.setItem(STORAGE_KEY_DEATHS, JSON.stringify(deathHistory));
     localStorage.setItem(STORAGE_KEY_COUNT, deathCount);
@@ -255,12 +268,11 @@ function handleTouch(e) {
         const tx = (t.clientX - rect.left) * scaleX;
         const ty = (t.clientY - rect.top) * scaleY;
 
-        // Store active touches for visualization
         touchInput.activeTouches.push({x: tx, y: ty});
 
-        // Improved Virtual Controls Layout
-        // Left 40% of screen is D-Pad (Split into Left/Right halves)
-        // Right 50% is Jump
+        // Improved Virtual Controls: Split screen approach
+        // Left 45% = Move (Left half = Left, Right half = Right)
+        // Right 55% = Jump
         if (tx < CANVAS_WIDTH * 0.45) {
             // Movement Zone
             if (tx < CANVAS_WIDTH * 0.225) {
@@ -268,8 +280,8 @@ function handleTouch(e) {
             } else {
                 touchInput.right = true;
             }
-        } else if (tx > CANVAS_WIDTH * 0.5) {
-            // Jump Zone (Right half)
+        } else {
+            // Jump Zone (Right side)
             touchInput.jump = true;
         }
     }
@@ -312,8 +324,8 @@ class Player {
     reset() {
         this.w = 20;
         this.h = 20;
-        this.x = 50;
-        this.y = 400;
+        this.x = spawnPoint.x;
+        this.y = spawnPoint.y;
         this.vx = 0;
         this.vy = 0;
         this.grounded = false;
@@ -368,30 +380,32 @@ class Player {
         this.checkCollisions();
         
         // Bounds
-        if (this.y > CANVAS_HEIGHT + 100) this.die("落下");
+        if (this.y > CANVAS_HEIGHT + 200) this.die("落下");
     }
 
     checkCollisions() {
         this.grounded = false;
         this.wallSliding = false;
 
-        // Moving Platforms handling
         let onPlatform = false;
 
         for (let block of entities) {
-            if (block.type === 'block' || block.type === 'ui_block' || block.type === 'moving_block') {
+            if (['block', 'ui_block', 'moving_block', 'invisible_block'].includes(block.type)) {
                 if (block.fake) continue;
-
+                // Invisible block logic: solid only if near or falling onto it? No, always solid but invisible.
+                
                 const colDir = this.getCollisionDir(block);
                 
                 if (colDir === 'b') {
                     this.y = block.y - this.h;
                     this.vy = 0;
                     this.grounded = true;
-                    // Move with platform
                     if (block.type === 'moving_block') {
                         this.x += block.vx;
                         onPlatform = true;
+                    }
+                    if (block.type === 'invisible_block') {
+                        block.revealed = true;
                     }
                 } else if (colDir === 't') {
                     this.y = block.y + block.h;
@@ -402,19 +416,25 @@ class Player {
                     this.vx = 0;
                     this.wallSliding = true;
                     this.wallDir = 1;
+                    if (block.type === 'invisible_block') block.revealed = true;
                 } else if (colDir === 'r') {
                     this.x = block.x + block.w;
                     this.vx = 0;
                     this.wallSliding = true;
                     this.wallDir = -1;
+                    if (block.type === 'invisible_block') block.revealed = true;
                 }
             } else if (block.type === 'trap') {
                 if (this.AABB(block)) this.die("串刺し");
+            } else if (block.type === 'enemy') {
+                if (this.AABB(block)) this.die("捕食");
             } else if (block.type === 'trigger') {
                 if (this.AABB(block)) block.activate();
             } else if (block.type === 'goal') {
                 if (this.AABB(block)) block.trigger(this);
             } else if (block.type === 'fake_save') {
+                if (this.AABB(block)) block.trigger(this);
+            } else if (block.type === 'checkpoint') {
                 if (this.AABB(block)) block.trigger(this);
             }
         }
@@ -481,6 +501,28 @@ class Block {
     }
 }
 
+class InvisibleBlock extends Block {
+    constructor(x, y, w, h) {
+        super(x, y, w, h);
+        this.type = 'invisible_block';
+        this.revealed = false;
+    }
+    draw() {
+        if (this.revealed) {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+            ctx.strokeStyle = '#fff';
+            ctx.strokeRect(this.x, this.y, this.w, this.h);
+        } else {
+            // Hint for mobile users: faint shimmer occasionally?
+            if (Math.random() > 0.99) {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+                ctx.fillRect(this.x, this.y, this.w, this.h);
+            }
+        }
+    }
+}
+
 class MovingBlock extends Block {
     constructor(x, y, w, h, range, speed) {
         super(x, y, w, h);
@@ -495,6 +537,36 @@ class MovingBlock extends Block {
         this.x += this.vx;
         if (this.x > this.startX + this.range || this.x < this.startX) {
             this.vx *= -1;
+        }
+    }
+}
+
+class Enemy {
+    constructor(x, y, w, h, range, speed) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.startX = x;
+        this.range = range;
+        this.speed = speed;
+        this.vx = speed;
+        this.type = 'enemy';
+    }
+    update() {
+        this.x += this.vx;
+        // Simple patrol
+        if (this.x > this.startX + this.range || this.x < this.startX) {
+            this.vx *= -1;
+        }
+        // Face player if triggered? nah simple patrol
+    }
+    draw() {
+        ctx.fillStyle = '#ff0055';
+        ctx.fillRect(this.x, this.y, this.w, this.h);
+        // Eyes
+        ctx.fillStyle = 'white';
+        if (this.vx > 0) {
+            ctx.fillRect(this.x + 15, this.y + 5, 5, 5);
+        } else {
+            ctx.fillRect(this.x + 5, this.y + 5, 5, 5);
         }
     }
 }
@@ -531,7 +603,6 @@ class FallingBlock extends Block {
             this.vy += GRAVITY * 1.5;
             this.y += this.vy;
             if (this.y > CANVAS_HEIGHT - 50 && !this.landed) {
-                // If it falls off screen or hits floor logic roughly
                 if (this.y > 600) this.landed = true;
             }
         }
@@ -590,6 +661,30 @@ class FakeSave {
             playSound('explosion');
             shakeIntensity = 25;
             p.die("セーブポイント爆発");
+        }
+    }
+}
+
+class Checkpoint {
+    constructor(x, y) {
+        this.x = x; this.y = y; this.w = 40; this.h = 40;
+        this.type = 'checkpoint';
+        this.active = false;
+    }
+    draw() {
+        ctx.fillStyle = this.active ? '#00ccff' : '#444';
+        ctx.fillRect(this.x, this.y, this.w, this.h);
+        ctx.fillStyle = '#fff';
+        ctx.font = '10px monospace';
+        ctx.fillText("CHK", this.x+10, this.y+24);
+    }
+    trigger(p) {
+        if (!this.active) {
+            this.active = true;
+            spawnPoint = {x: this.x, y: this.y};
+            playSound('checkpoint');
+            // Heal message?
+            for(let i=0; i<10; i++) particles.push(new Particle(this.x+20, this.y, '#00ccff'));
         }
     }
 }
@@ -666,25 +761,21 @@ let titleTrapped = false;
 
 // --- Level Generation ---
 function initLevel() {
+    // If resetting from gameover, keep spawn point if valid
+    if (currentState === STATES.TITLE) spawnPoint = {x: 50, y: 400};
+    
     player = new Player();
     entities = [];
     particles = [];
     cameraX = 0;
     
-    // --- PART 1: The Basics (Extended) ---
-    // Floor Safe
+    // --- PART 1: The Basics ---
     entities.push(new Block(0, 500, 200, 100));
-    
-    // The Classic Pit (Fake Floor) - Added visual hint
-    let fakeFloor = new Block(200, 500, 150, 100, true);
-    entities.push(fakeFloor);
-    // Real floor continues
+    // Pit hint
+    entities.push(new Block(200, 500, 150, 100, true));
     entities.push(new Block(350, 500, 450, 100));
-
-    // Walls
     entities.push(new Block(0, 0, 20, 600)); 
 
-    // Platforms
     entities.push(new Block(200, 350, 100, 20));
     entities.push(new Block(400, 250, 100, 20));
     
@@ -700,53 +791,56 @@ function initLevel() {
     entities.push(killerUI);
     entities.push(new TriggerZone(580, 100, 140, 200, 'killUI'));
 
-    // --- PART 2: The Extension (Horizontal Scroll) ---
-    // Start extending past x=800
-    
-    // A long gap with moving platforms
+    // --- PART 2: Extension with Enemies ---
     entities.push(new Block(800, 400, 100, 20));
     
-    // Moving Platform
-    entities.push(new MovingBlock(950, 400, 100, 20, 200, 2));
+    // New Gimmick: Invisible Bridge
+    // 950 - 1200 is empty, but has invisible blocks
+    entities.push(new InvisibleBlock(950, 400, 50, 20));
+    entities.push(new InvisibleBlock(1050, 350, 50, 20));
+    entities.push(new InvisibleBlock(1150, 300, 50, 20));
 
-    // Landing zone
-    entities.push(new Block(1300, 400, 200, 200));
+    entities.push(new Block(1300, 400, 300, 200));
+
+    // Enemy Patrol
+    entities.push(new Enemy(1350, 370, 30, 30, 200, 2));
 
     // Fake Save Point
     entities.push(new FakeSave(1400, 360));
 
-    // Stairs up
-    entities.push(new Block(1550, 300, 50, 20));
-    entities.push(new Block(1650, 200, 50, 20));
-
-    // The Ceiling Trap Corridor
-    entities.push(new Block(1750, 200, 400, 20)); // Floor
-    entities.push(new Block(1750, 100, 400, 20)); // Ceiling (Safe looking)
+    // REAL Checkpoint (Looks suspicious, black/grey)
+    // Placed after the fake one
+    entities.push(new Checkpoint(1550, 360));
     
-    // Crushing Ceiling
-    let crusher = new FallingBlock(1900, -50, 100, 150, "PRESS");
+    // --- PART 3: The Hard Part ---
+    entities.push(new Block(1700, 300, 50, 20));
+    
+    // Moving platforms over spikes
+    entities.push(new Trap(1700, 580, 1000, 20));
+    entities.push(new MovingBlock(1800, 300, 80, 20, 150, 3));
+    entities.push(new MovingBlock(2050, 250, 80, 20, 150, -3));
+
+    // Ceiling Trap
+    entities.push(new Block(2300, 200, 400, 20)); // Floor
+    let crusher = new FallingBlock(2450, -50, 100, 150, "PRESS");
     crusher.id = 'crush';
     entities.push(crusher);
-    entities.push(new TriggerZone(1850, 150, 50, 50, 'crush'));
-
-    // Final Stretch
-    entities.push(new Block(2200, 300, 100, 20));
-    entities.push(new Block(2400, 400, 400, 50));
-
-    // Trap Spikes
-    entities.push(new Trap(2250, 600, 100, 20));
+    entities.push(new TriggerZone(2400, 150, 50, 50, 'crush'));
 
     // Fake Goal
-    entities.push(new Goal(2500, 360, true));
+    entities.push(new Block(2800, 400, 200, 50));
+    entities.push(new Goal(2900, 360, true));
 
-    // Real Goal (Hidden far right)
-    entities.push(new Block(2700, 300, 50, 20)); // Small step
-    entities.push(new Goal(2800, 260, false));
-    entities.push(new Block(2750, 300, 100, 20)); // Platform for goal
+    // Invisible stairs to real goal
+    entities.push(new InvisibleBlock(3000, 300, 50, 20));
+    entities.push(new InvisibleBlock(3100, 200, 50, 20));
+    
+    // Real Goal
+    entities.push(new Block(3200, 150, 100, 20));
+    entities.push(new Goal(3250, 110, false));
 
-    // Spikes at bottom for the whole extended area
+    // Global Pit Spikes
     entities.push(new Trap(200, 580, 150, 20));
-    entities.push(new Trap(800, 580, 2000, 20));
 }
 
 // --- Title Screen Logic ---
@@ -756,13 +850,11 @@ let fakeStartBtn = { x: 300, y: 350, w: 200, h: 60 };
 function checkTitleInteraction(clickX, clickY) {
     if (currentState !== STATES.TITLE) return;
     
-    // Fake Button
     if (mouse.clicked || (clickX && clickY)) {
         let cx = mouse.x;
         let cy = mouse.y;
         if (clickX) { cx = clickX * (CANVAS_WIDTH / canvas.clientWidth); cy = clickY * (CANVAS_HEIGHT / canvas.clientHeight); }
 
-        // Fake Button Zone
         if (cx > fakeStartBtn.x && cx < fakeStartBtn.x + fakeStartBtn.w &&
             cy > fakeStartBtn.y && cy < fakeStartBtn.y + fakeStartBtn.h) {
             
@@ -775,22 +867,23 @@ function checkTitleInteraction(clickX, clickY) {
             return;
         }
 
-        // Real Start (Bottom Right Corner)
         if (cx > realStartBtn.x && cy > realStartBtn.y) {
             currentState = STATES.PLAYING;
             initLevel();
             startBGM();
         }
-        
-        // Touch friendly title bypass: if trapped already or user taps elsewhere multiple times? 
-        // No, keep the puzzle.
     }
 }
 
 function resetGame() {
     if (currentState === STATES.GAMEOVER) {
         currentState = STATES.PLAYING;
+        // Re-init but keep checkpoint data
+        const savedSpawn = {...spawnPoint};
         initLevel();
+        spawnPoint = savedSpawn;
+        player.x = spawnPoint.x;
+        player.y = spawnPoint.y;
     }
 }
 
@@ -806,15 +899,12 @@ function update() {
         player.update();
         entities.forEach(e => { if (e.update) e.update(); });
         
-        // Camera Follow
-        let targetX = player.x - CANVAS_WIDTH / 3;
-        // Clamp
+        // Camera Follow - Look Ahead (Shift player to left third)
+        let targetX = player.x - CANVAS_WIDTH * 0.25; 
         if (targetX < 0) targetX = 0;
-        // Smooth lerp
         cameraX += (targetX - cameraX) * 0.1;
     }
     
-    // Mobile Restart on Tap
     if (currentState === STATES.GAMEOVER && (touchInput.left || touchInput.right || touchInput.jump)) {
         resetGame();
     }
@@ -829,12 +919,10 @@ function update() {
 function draw() {
     ctx.save();
     
-    // Shake
     let dx = (Math.random() - 0.5) * shakeIntensity;
     let dy = (Math.random() - 0.5) * shakeIntensity;
     ctx.translate(dx, dy);
 
-    // BG
     ctx.fillStyle = '#222';
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
@@ -844,7 +932,7 @@ function draw() {
         ctx.textAlign = 'center';
         ctx.fillText("THE UNFAIR", CANVAS_WIDTH/2, 200);
         ctx.font = '20px Courier New';
-        ctx.fillText("Mobile Extended Ed.", CANVAS_WIDTH/2, 230);
+        ctx.fillText("Mobile V3 + Checkpoints", CANVAS_WIDTH/2, 230);
         ctx.fillText(`Deaths: ${deathCount}`, CANVAS_WIDTH/2, 270);
 
         if (!titleTrapped) {
@@ -864,11 +952,9 @@ function draw() {
         ctx.fillText("start", realStartBtn.x, realStartBtn.y - 5);
 
     } else {
-        // --- Game World (Camera applied) ---
         ctx.save();
         ctx.translate(-Math.floor(cameraX), 0);
 
-        // Blood
         ctx.fillStyle = '#880000';
         deathHistory.forEach(pos => {
             ctx.font = '20px sans-serif';
@@ -887,9 +973,9 @@ function draw() {
         
         particles.forEach(p => p.draw());
 
-        ctx.restore(); // End Camera
+        ctx.restore();
 
-        // --- UI (Fixed on screen) ---
+        // UI Layer
         if (currentState === STATES.GAMEOVER) {
             ctx.fillStyle = 'rgba(0,0,0,0.7)';
             ctx.fillRect(0,0,CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -911,35 +997,33 @@ function draw() {
             ctx.fillText("YOU ESCAPED!", CANVAS_WIDTH/2, CANVAS_HEIGHT/2);
         }
 
-        // --- Mobile Controls Visualizer (New) ---
-        
-        // Left Zone (Move)
+        // --- Mobile Controls Visualizer (Updated) ---
+        // Left Zone
         ctx.fillStyle = touchInput.left ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)';
-        ctx.fillRect(0, CANVAS_HEIGHT - 150, CANVAS_WIDTH * 0.225, 150); // Left
-        
+        ctx.fillRect(0, CANVAS_HEIGHT - 120, CANVAS_WIDTH * 0.225, 120); 
         ctx.fillStyle = touchInput.right ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)';
-        ctx.fillRect(CANVAS_WIDTH * 0.225, CANVAS_HEIGHT - 150, CANVAS_WIDTH * 0.225, 150); // Right
+        ctx.fillRect(CANVAS_WIDTH * 0.225, CANVAS_HEIGHT - 120, CANVAS_WIDTH * 0.225, 120);
         
-        // Separator line
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.font = '30px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText("←", CANVAS_WIDTH * 0.1125, CANVAS_HEIGHT - 50);
+        ctx.fillText("→", CANVAS_WIDTH * 0.3375, CANVAS_HEIGHT - 50);
+
+        // Center separator (Neutral zone hint)
         ctx.strokeStyle = 'rgba(255,255,255,0.1)';
         ctx.beginPath();
-        ctx.moveTo(CANVAS_WIDTH * 0.225, CANVAS_HEIGHT - 150);
+        ctx.moveTo(CANVAS_WIDTH * 0.225, CANVAS_HEIGHT - 120);
         ctx.lineTo(CANVAS_WIDTH * 0.225, CANVAS_HEIGHT);
         ctx.stroke();
-
-        ctx.fillStyle = 'rgba(255,255,255,0.5)';
-        ctx.font = '40px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText("←", CANVAS_WIDTH * 0.1125, CANVAS_HEIGHT - 60);
-        ctx.fillText("→", CANVAS_WIDTH * 0.3375, CANVAS_HEIGHT - 60);
         
         // Right Zone (Jump)
         ctx.fillStyle = touchInput.jump ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)';
-        ctx.fillRect(CANVAS_WIDTH * 0.5, CANVAS_HEIGHT - 150, CANVAS_WIDTH * 0.5, 150);
+        ctx.fillRect(CANVAS_WIDTH * 0.45, CANVAS_HEIGHT - 120, CANVAS_WIDTH * 0.55, 120);
         ctx.fillStyle = 'rgba(255,255,255,0.5)';
-        ctx.fillText("JUMP", CANVAS_WIDTH * 0.75, CANVAS_HEIGHT - 60);
+        ctx.fillText("JUMP", CANVAS_WIDTH * 0.725, CANVAS_HEIGHT - 50);
 
-        // Touch Indicators (Where fingers actually are)
+        // Touch Indicators
         ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
         touchInput.activeTouches.forEach(t => {
             ctx.beginPath();
@@ -950,7 +1034,6 @@ function draw() {
 
     ctx.restore();
 
-    // Glitch effect
     if (glitchIntensity > 1 || currentState === STATES.GAMEOVER && Math.random() > 0.9) {
         const sliceHeight = Math.random() * 50;
         const sliceY = Math.random() * CANVAS_HEIGHT;
