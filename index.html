@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>THE UNFAIR: Meta Platformer (Mobile)</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            color: #eee;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Courier New', monospace;
+            user-select: none;
+            touch-action: none; /* Prevent scroll on mobile */
+            -webkit-touch-callout: none;
+        }
+        canvas {
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+            /* Fit to screen on mobile */
+            max-width: 100%;
+            max-height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+/**
+ * THE UNFAIR (Extended Mobile Version v2)
+ * Optimized for Touch Controls
+ */
+
+// --- Constants & Config ---
+// Internal resolution
+const CANVAS_WIDTH = 800;
+const CANVAS_HEIGHT = 600;
+
+// Physics
+const GRAVITY = 0.6;
+const FRICTION = 0.82;
+const ACCEL = 1.2;
+const JUMP_FORCE = 13; 
+const WALL_JUMP_FORCE_X = 10;
+const WALL_JUMP_FORCE_Y = 11;
+const MAX_SPEED = 7;
+
+// Storage Keys
+const STORAGE_KEY_DEATHS = 'unfair_death_history_v2'; 
+const STORAGE_KEY_COUNT = 'unfair_death_count_v2';
+
+// Audio Context
+let audioCtx = null;
+let bgmInterval = null;
+
+// Game State
+const STATES = { TITLE: 0, PLAYING: 1, GAMEOVER: 2, WIN: 3 };
+let currentState = STATES.TITLE;
+let frameCount = 0;
+let shakeIntensity = 0;
+let glitchIntensity = 0;
+
+// Camera
+let cameraX = 0;
+
+// Mocking Texts
+const MOCKERY = [
+    "重力をご存知ない？",
+    "指が滑りました？",
+    "学習能力ゼロ",
+    "それは罠でした（笑）",
+    "スマホ投げないでね",
+    "惜しい！（大嘘）",
+    "予測通りです",
+    "開発者の思うツボ",
+    "セーブなんて無いよ"
+];
+
+let lastMockery = "";
+
+// --- Audio System (Web Audio API) ---
+function initAudio() {
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        startBGM();
+    } else if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+}
+
+function playSound(type) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    const now = audioCtx.currentTime;
+
+    if (type === 'jump') {
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(150, now);
+        osc.frequency.exponentialRampToValueAtTime(300, now + 0.1);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+        osc.start(now);
+        osc.stop(now + 0.1);
+    } else if (type === 'die') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(100, now);
+        osc.frequency.exponentialRampToValueAtTime(10, now + 0.3);
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+        // Noise burst
+        const bufferSize = audioCtx.sampleRate * 0.3;
+        const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+        const noise = audioCtx.createBufferSource();
+        noise.buffer = buffer;
+        const noiseGain = audioCtx.createGain();
+        noiseGain.gain.value = 0.2;
+        noise.connect(noiseGain);
+        noiseGain.connect(audioCtx.destination);
+        noise.start(now);
+
+        osc.start(now);
+        osc.stop(now + 0.3);
+    } else if (type === 'buzzer') { 
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(50, now);
+        osc.frequency.linearRampToValueAtTime(30, now + 0.5);
+        gain.gain.setValueAtTime(0.4, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.5);
+        osc.start(now);
+        osc.stop(now + 0.5);
+    } else if (type === 'win') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.setValueAtTime(554, now + 0.1);
+        osc.frequency.setValueAtTime(659, now + 0.2);
+        gain.gain.value = 0.2;
+        osc.start(now);
+        osc.stop(now + 0.6);
+    } else if (type === 'explosion') {
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(50, now);
+        osc.frequency.exponentialRampToValueAtTime(1, now + 0.5);
+        gain.gain.setValueAtTime(0.5, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+        osc.start(now);
+        osc.stop(now + 0.5);
+    }
+}
+
+function startBGM() {
+    let noteIndex = 0;
+    const notes = [110, 103, 97, 103]; 
+    
+    if (bgmInterval) clearInterval(bgmInterval);
+
+    bgmInterval = setInterval(() => {
+        if (!audioCtx || currentState !== STATES.PLAYING) return;
+        
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        
+        // Progress increases pitch/speed tension (Meta audio)
+        const progressFactor = Math.max(0, (player.x / 3000)); // Adjusted for longer level
+        const pitchMod = 1 + (progressFactor * 0.5);
+        
+        osc.type = 'triangle';
+        osc.frequency.value = notes[noteIndex] * pitchMod;
+        
+        gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+        
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.4);
+        
+        noteIndex = (noteIndex + 1) % notes.length;
+    }, 400);
+}
+
+// --- Persistence ---
+let deathHistory = [];
+let deathCount = 0;
+
+function loadPersistence() {
+    const d = localStorage.getItem(STORAGE_KEY_DEATHS);
+    if (d) deathHistory = JSON.parse(d);
+    const c = localStorage.getItem(STORAGE_KEY_COUNT);
+    if (c) deathCount = parseInt(c);
+}
+
+function saveDeath(x, y) {
+    deathCount++;
+    deathHistory.push({x: Math.round(x), y: Math.round(y)});
+    if (deathHistory.length > 150) deathHistory.shift();
+    
+    localStorage.setItem(STORAGE_KEY_DEATHS, JSON.stringify(deathHistory));
+    localStorage.setItem(STORAGE_KEY_COUNT, deathCount);
+}
+
+// --- Setup Canvas ---
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+    // Keep aspect ratio but fit window
+    let scale = Math.min(window.innerWidth / CANVAS_WIDTH, window.innerHeight / CANVAS_HEIGHT);
+    canvas.style.width = (CANVAS_WIDTH * scale) + 'px';
+    canvas.style.height = (CANVAS_HEIGHT * scale) + 'px';
+}
+canvas.width = CANVAS_WIDTH;
+canvas.height = CANVAS_HEIGHT;
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// --- Input Handling ---
+const keys = {};
+const touchInput = { left: false, right: false, jump: false, activeTouches: [] };
+const mouse = { x: 0, y: 0, clicked: false };
+
+// Touch Controls (Mobile)
+canvas.addEventListener('touchstart', handleTouch, {passive: false});
+canvas.addEventListener('touchmove', handleTouch, {passive: false});
+canvas.addEventListener('touchend', handleTouch, {passive: false});
+
+function handleTouch(e) {
+    e.preventDefault();
+    initAudio();
+    checkTitleInteraction(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+
+    // Reset touch inputs
+    touchInput.left = false;
+    touchInput.right = false;
+    touchInput.jump = false;
+    touchInput.activeTouches = [];
+
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = CANVAS_WIDTH / rect.width;
+    const scaleY = CANVAS_HEIGHT / rect.height;
+
+    for (let i = 0; i < e.touches.length; i++) {
+        const t = e.touches[i];
+        const tx = (t.clientX - rect.left) * scaleX;
+        const ty = (t.clientY - rect.top) * scaleY;
+
+        // Store active touches for visualization
+        touchInput.activeTouches.push({x: tx, y: ty});
+
+        // Improved Virtual Controls Layout
+        // Left 40% of screen is D-Pad (Split into Left/Right halves)
+        // Right 50% is Jump
+        if (tx < CANVAS_WIDTH * 0.45) {
+            // Movement Zone
+            if (tx < CANVAS_WIDTH * 0.225) {
+                touchInput.left = true;
+            } else {
+                touchInput.right = true;
+            }
+        } else if (tx > CANVAS_WIDTH * 0.5) {
+            // Jump Zone (Right half)
+            touchInput.jump = true;
+        }
+    }
+}
+
+// Mouse/Desktop Controls
+window.addEventListener('keydown', (e) => {
+    keys[e.code] = true;
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+        e.preventDefault();
+    }
+    if (currentState === STATES.GAMEOVER && e.code === 'Space') resetGame();
+});
+
+window.addEventListener('keyup', (e) => keys[e.code] = false);
+
+canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = CANVAS_WIDTH / rect.width;
+    const scaleY = CANVAS_HEIGHT / rect.height;
+    mouse.x = (e.clientX - rect.left) * scaleX;
+    mouse.y = (e.clientY - rect.top) * scaleY;
+});
+
+canvas.addEventListener('mousedown', () => {
+    mouse.clicked = true;
+    initAudio();
+    checkTitleInteraction(mouse.x * (canvas.offsetWidth/CANVAS_WIDTH), mouse.y * (canvas.offsetHeight/CANVAS_HEIGHT)); 
+});
+canvas.addEventListener('mouseup', () => mouse.clicked = false);
+
+
+// --- Game Entities ---
+
+class Player {
+    constructor() {
+        this.reset();
+    }
+
+    reset() {
+        this.w = 20;
+        this.h = 20;
+        this.x = 50;
+        this.y = 400;
+        this.vx = 0;
+        this.vy = 0;
+        this.grounded = false;
+        this.wallSliding = false;
+        this.wallDir = 0;
+        this.dead = false;
+        this.color = '#00ffcc';
+    }
+
+    update() {
+        if (this.dead) return;
+
+        // Input Mixing (Keyboard + Touch)
+        const left = keys['ArrowLeft'] || touchInput.left;
+        const right = keys['ArrowRight'] || touchInput.right;
+        const jump = keys['Space'] || keys['KeyZ'] || keys['ArrowUp'] || touchInput.jump;
+
+        // Movement
+        if (left) {
+            if (this.vx > -MAX_SPEED) this.vx -= ACCEL;
+        } else if (right) {
+            if (this.vx < MAX_SPEED) this.vx += ACCEL;
+        } else {
+            this.vx *= FRICTION;
+        }
+
+        // Jump
+        if (jump && !this.jumpLocked) {
+            if (this.grounded) {
+                this.vy = -JUMP_FORCE;
+                this.grounded = false;
+                this.jumpLocked = true;
+                playSound('jump');
+            } else if (this.wallSliding) {
+                this.vy = -WALL_JUMP_FORCE_Y;
+                this.vx = -this.wallDir * WALL_JUMP_FORCE_X;
+                this.wallSliding = false;
+                this.jumpLocked = true;
+                playSound('jump');
+            }
+        }
+
+        if (!jump) {
+            this.jumpLocked = false;
+        }
+
+        // Physics
+        this.vy += GRAVITY;
+        this.x += this.vx;
+        this.y += this.vy;
+
+        this.checkCollisions();
+        
+        // Bounds
+        if (this.y > CANVAS_HEIGHT + 100) this.die("落下");
+    }
+
+    checkCollisions() {
+        this.grounded = false;
+        this.wallSliding = false;
+
+        // Moving Platforms handling
+        let onPlatform = false;
+
+        for (let block of entities) {
+            if (block.type === 'block' || block.type === 'ui_block' || block.type === 'moving_block') {
+                if (block.fake) continue;
+
+                const colDir = this.getCollisionDir(block);
+                
+                if (colDir === 'b') {
+                    this.y = block.y - this.h;
+                    this.vy = 0;
+                    this.grounded = true;
+                    // Move with platform
+                    if (block.type === 'moving_block') {
+                        this.x += block.vx;
+                        onPlatform = true;
+                    }
+                } else if (colDir === 't') {
+                    this.y = block.y + block.h;
+                    this.vy = 0;
+                    if (block.falling || block.type === 'moving_block') this.die("圧死"); 
+                } else if (colDir === 'l') {
+                    this.x = block.x - this.w;
+                    this.vx = 0;
+                    this.wallSliding = true;
+                    this.wallDir = 1;
+                } else if (colDir === 'r') {
+                    this.x = block.x + block.w;
+                    this.vx = 0;
+                    this.wallSliding = true;
+                    this.wallDir = -1;
+                }
+            } else if (block.type === 'trap') {
+                if (this.AABB(block)) this.die("串刺し");
+            } else if (block.type === 'trigger') {
+                if (this.AABB(block)) block.activate();
+            } else if (block.type === 'goal') {
+                if (this.AABB(block)) block.trigger(this);
+            } else if (block.type === 'fake_save') {
+                if (this.AABB(block)) block.trigger(this);
+            }
+        }
+    }
+
+    getCollisionDir(block) {
+        const dx = (this.x + this.w / 2) - (block.x + block.w / 2);
+        const dy = (this.y + this.h / 2) - (block.y + block.h / 2);
+        const w = (this.w + block.w) / 2;
+        const h = (this.h + block.h) / 2;
+        const crossWidth = w * dy;
+        const crossHeight = h * dx;
+
+        if (Math.abs(dx) <= w && Math.abs(dy) <= h) {
+            const overlapX = w - Math.abs(dx);
+            const overlapY = h - Math.abs(dy);
+            if (overlapX < overlapY) {
+                return dx > 0 ? 'r' : 'l';
+            } else {
+                return dy > 0 ? 't' : 'b';
+            }
+        }
+        return null;
+    }
+
+    AABB(other) {
+        return this.x < other.x + other.w &&
+               this.x + this.w > other.x &&
+               this.y < other.y + other.h &&
+               this.y + this.h > other.y;
+    }
+
+    die(reason) {
+        if (this.dead) return;
+        this.dead = true;
+        saveDeath(this.x, this.y);
+        shakeIntensity = 20;
+        glitchIntensity = 10;
+        playSound('die');
+        
+        lastMockery = MOCKERY[Math.floor(Math.random() * MOCKERY.length)] + `\n(死因: ${reason})`;
+        
+        for(let i=0; i<20; i++) {
+            particles.push(new Particle(this.x + this.w/2, this.y + this.h/2, '#ff0000'));
+        }
+
+        currentState = STATES.GAMEOVER;
+    }
+}
+
+class Block {
+    constructor(x, y, w, h, fake = false) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.type = 'block';
+        this.fake = fake;
+        this.color = '#aaa'; 
+        if (fake) this.color = '#a0a0a0'; 
+    }
+    draw() {
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x, this.y, this.w, this.h);
+        ctx.strokeStyle = '#555';
+        ctx.strokeRect(this.x, this.y, this.w, this.h);
+    }
+}
+
+class MovingBlock extends Block {
+    constructor(x, y, w, h, range, speed) {
+        super(x, y, w, h);
+        this.type = 'moving_block';
+        this.startX = x;
+        this.range = range;
+        this.speed = speed;
+        this.vx = speed;
+        this.color = '#88ccaa';
+    }
+    update() {
+        this.x += this.vx;
+        if (this.x > this.startX + this.range || this.x < this.startX) {
+            this.vx *= -1;
+        }
+    }
+}
+
+class Trap {
+    constructor(x, y, w, h) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.type = 'trap';
+    }
+    draw() {
+        ctx.fillStyle = '#ff3333';
+        ctx.beginPath();
+        for(let i=0; i<this.w; i+=10) {
+            ctx.moveTo(this.x + i, this.y + this.h);
+            ctx.lineTo(this.x + i + 5, this.y);
+            ctx.lineTo(this.x + i + 10, this.y + this.h);
+        }
+        ctx.fill();
+    }
+}
+
+class FallingBlock extends Block {
+    constructor(x, y, w, h, text) {
+        super(x, y, w, h);
+        this.type = 'ui_block';
+        this.text = text;
+        this.falling = false;
+        this.vy = 0;
+        this.landed = false;
+    }
+    
+    update() {
+        if (this.falling) {
+            this.vy += GRAVITY * 1.5;
+            this.y += this.vy;
+            if (this.y > CANVAS_HEIGHT - 50 && !this.landed) {
+                // If it falls off screen or hits floor logic roughly
+                if (this.y > 600) this.landed = true;
+            }
+        }
+    }
+
+    draw() {
+        ctx.fillStyle = '#333';
+        ctx.fillRect(this.x, this.y, this.w, this.h);
+        ctx.fillStyle = '#fff';
+        ctx.font = '16px monospace';
+        ctx.fillText(this.text, this.x + 10, this.y + 20);
+        if (this.text.includes("LIFE")) {
+            ctx.fillStyle = 'red';
+            ctx.fillRect(this.x + 60, this.y + 5, this.w - 70, this.h - 10);
+        }
+    }
+}
+
+class TriggerZone {
+    constructor(x, y, w, h, targetId) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.type = 'trigger';
+        this.targetId = targetId;
+        this.active = true;
+    }
+    draw() {}
+    activate() {
+        if (!this.active) return;
+        this.active = false;
+        const target = entities.find(e => e.id === this.targetId);
+        if (target) {
+            target.falling = true;
+            playSound('buzzer');
+        }
+    }
+}
+
+class FakeSave {
+    constructor(x, y) {
+        this.x = x; this.y = y; this.w = 40; this.h = 40;
+        this.type = 'fake_save';
+        this.triggered = false;
+    }
+    draw() {
+        if(!this.triggered) {
+            ctx.fillStyle = '#44ff44';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+            ctx.fillStyle = '#000';
+            ctx.font = '10px monospace';
+            ctx.fillText("SAVE", this.x+8, this.y+24);
+        }
+    }
+    trigger(p) {
+        if (!this.triggered) {
+            this.triggered = true;
+            playSound('explosion');
+            shakeIntensity = 25;
+            p.die("セーブポイント爆発");
+        }
+    }
+}
+
+class Goal {
+    constructor(x, y, isFake) {
+        this.x = x; this.y = y; this.w = 30; this.h = 40;
+        this.type = 'goal';
+        this.isFake = isFake;
+        this.revealed = false;
+    }
+    draw() {
+        if (this.revealed && this.isFake) {
+            ctx.fillStyle = 'purple';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.arc(this.x + 10, this.y + 10, 5, 0, Math.PI*2);
+            ctx.arc(this.x + 20, this.y + 10, 5, 0, Math.PI*2);
+            ctx.fill();
+            ctx.fillStyle = 'red';
+            ctx.fillRect(this.x + 5, this.y + 25, 20, 5);
+        } else {
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(this.x, this.y, 2, 40);
+            ctx.fillStyle = '#ffff00';
+            ctx.beginPath();
+            ctx.moveTo(this.x + 2, this.y);
+            ctx.lineTo(this.x + 25, this.y + 10);
+            ctx.lineTo(this.x + 2, this.y + 20);
+            ctx.fill();
+        }
+    }
+    trigger(p) {
+        if (this.isFake) {
+            if (!this.revealed) {
+                this.revealed = true;
+                playSound('buzzer');
+                p.die("孔明の罠");
+            }
+        } else {
+            currentState = STATES.WIN;
+            playSound('win');
+        }
+    }
+}
+
+class Particle {
+    constructor(x, y, color) {
+        this.x = x; this.y = y;
+        this.vx = (Math.random() - 0.5) * 10;
+        this.vy = (Math.random() - 0.5) * 10;
+        this.life = 1.0;
+        this.color = color;
+    }
+    update() {
+        this.x += this.vx;
+        this.y += this.vy;
+        this.life -= 0.05;
+    }
+    draw() {
+        ctx.globalAlpha = this.life;
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x, this.y, 3, 3);
+        ctx.globalAlpha = 1.0;
+    }
+}
+
+// --- Globals ---
+let player;
+let entities = [];
+let particles = [];
+let titleTrapped = false;
+
+// --- Level Generation ---
+function initLevel() {
+    player = new Player();
+    entities = [];
+    particles = [];
+    cameraX = 0;
+    
+    // --- PART 1: The Basics (Extended) ---
+    // Floor Safe
+    entities.push(new Block(0, 500, 200, 100));
+    
+    // The Classic Pit (Fake Floor) - Added visual hint
+    let fakeFloor = new Block(200, 500, 150, 100, true);
+    entities.push(fakeFloor);
+    // Real floor continues
+    entities.push(new Block(350, 500, 450, 100));
+
+    // Walls
+    entities.push(new Block(0, 0, 20, 600)); 
+
+    // Platforms
+    entities.push(new Block(200, 350, 100, 20));
+    entities.push(new Block(400, 250, 100, 20));
+    
+    // Trap 1: Falling Sign
+    let tutorialSign = new FallingBlock(360, -100, 120, 40, "Tutorial");
+    tutorialSign.id = 'tutSign';
+    entities.push(tutorialSign);
+    entities.push(new TriggerZone(360, 450, 50, 50, 'tutSign'));
+
+    // Trap 2: Killer UI
+    let killerUI = new FallingBlock(550, 20, 200, 30, "LIFE: 100%");
+    killerUI.id = 'killUI';
+    entities.push(killerUI);
+    entities.push(new TriggerZone(580, 100, 140, 200, 'killUI'));
+
+    // --- PART 2: The Extension (Horizontal Scroll) ---
+    // Start extending past x=800
+    
+    // A long gap with moving platforms
+    entities.push(new Block(800, 400, 100, 20));
+    
+    // Moving Platform
+    entities.push(new MovingBlock(950, 400, 100, 20, 200, 2));
+
+    // Landing zone
+    entities.push(new Block(1300, 400, 200, 200));
+
+    // Fake Save Point
+    entities.push(new FakeSave(1400, 360));
+
+    // Stairs up
+    entities.push(new Block(1550, 300, 50, 20));
+    entities.push(new Block(1650, 200, 50, 20));
+
+    // The Ceiling Trap Corridor
+    entities.push(new Block(1750, 200, 400, 20)); // Floor
+    entities.push(new Block(1750, 100, 400, 20)); // Ceiling (Safe looking)
+    
+    // Crushing Ceiling
+    let crusher = new FallingBlock(1900, -50, 100, 150, "PRESS");
+    crusher.id = 'crush';
+    entities.push(crusher);
+    entities.push(new TriggerZone(1850, 150, 50, 50, 'crush'));
+
+    // Final Stretch
+    entities.push(new Block(2200, 300, 100, 20));
+    entities.push(new Block(2400, 400, 400, 50));
+
+    // Trap Spikes
+    entities.push(new Trap(2250, 600, 100, 20));
+
+    // Fake Goal
+    entities.push(new Goal(2500, 360, true));
+
+    // Real Goal (Hidden far right)
+    entities.push(new Block(2700, 300, 50, 20)); // Small step
+    entities.push(new Goal(2800, 260, false));
+    entities.push(new Block(2750, 300, 100, 20)); // Platform for goal
+
+    // Spikes at bottom for the whole extended area
+    entities.push(new Trap(200, 580, 150, 20));
+    entities.push(new Trap(800, 580, 2000, 20));
+}
+
+// --- Title Screen Logic ---
+let realStartBtn = { x: 780, y: 580, w: 20, h: 20 };
+let fakeStartBtn = { x: 300, y: 350, w: 200, h: 60 };
+
+function checkTitleInteraction(clickX, clickY) {
+    if (currentState !== STATES.TITLE) return;
+    
+    // Fake Button
+    if (mouse.clicked || (clickX && clickY)) {
+        let cx = mouse.x;
+        let cy = mouse.y;
+        if (clickX) { cx = clickX * (CANVAS_WIDTH / canvas.clientWidth); cy = clickY * (CANVAS_HEIGHT / canvas.clientHeight); }
+
+        // Fake Button Zone
+        if (cx > fakeStartBtn.x && cx < fakeStartBtn.x + fakeStartBtn.w &&
+            cy > fakeStartBtn.y && cy < fakeStartBtn.y + fakeStartBtn.h) {
+            
+            if (!titleTrapped) {
+                playSound('explosion');
+                shakeIntensity = 30;
+                titleTrapped = true; 
+                for(let i=0; i<50; i++) particles.push(new Particle(cx, cy, '#fff'));
+            }
+            return;
+        }
+
+        // Real Start (Bottom Right Corner)
+        if (cx > realStartBtn.x && cy > realStartBtn.y) {
+            currentState = STATES.PLAYING;
+            initLevel();
+            startBGM();
+        }
+        
+        // Touch friendly title bypass: if trapped already or user taps elsewhere multiple times? 
+        // No, keep the puzzle.
+    }
+}
+
+function resetGame() {
+    if (currentState === STATES.GAMEOVER) {
+        currentState = STATES.PLAYING;
+        initLevel();
+    }
+}
+
+// --- Main Loop ---
+
+function update() {
+    frameCount++;
+
+    if (shakeIntensity > 0) shakeIntensity *= 0.9;
+    if (shakeIntensity < 0.5) shakeIntensity = 0;
+
+    if (currentState === STATES.PLAYING) {
+        player.update();
+        entities.forEach(e => { if (e.update) e.update(); });
+        
+        // Camera Follow
+        let targetX = player.x - CANVAS_WIDTH / 3;
+        // Clamp
+        if (targetX < 0) targetX = 0;
+        // Smooth lerp
+        cameraX += (targetX - cameraX) * 0.1;
+    }
+    
+    // Mobile Restart on Tap
+    if (currentState === STATES.GAMEOVER && (touchInput.left || touchInput.right || touchInput.jump)) {
+        resetGame();
+    }
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+        particles[i].update();
+        if (particles[i].life <= 0) particles.splice(i, 1);
+    }
+    if (glitchIntensity > 0) glitchIntensity *= 0.9;
+}
+
+function draw() {
+    ctx.save();
+    
+    // Shake
+    let dx = (Math.random() - 0.5) * shakeIntensity;
+    let dy = (Math.random() - 0.5) * shakeIntensity;
+    ctx.translate(dx, dy);
+
+    // BG
+    ctx.fillStyle = '#222';
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    if (currentState === STATES.TITLE) {
+        ctx.fillStyle = '#fff';
+        ctx.font = '40px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText("THE UNFAIR", CANVAS_WIDTH/2, 200);
+        ctx.font = '20px Courier New';
+        ctx.fillText("Mobile Extended Ed.", CANVAS_WIDTH/2, 230);
+        ctx.fillText(`Deaths: ${deathCount}`, CANVAS_WIDTH/2, 270);
+
+        if (!titleTrapped) {
+            ctx.fillStyle = '#444';
+            ctx.fillRect(fakeStartBtn.x, fakeStartBtn.y, fakeStartBtn.w, fakeStartBtn.h);
+            ctx.fillStyle = '#fff';
+            ctx.fillText("TAP TO START", CANVAS_WIDTH/2, 385);
+        } else {
+            ctx.fillStyle = 'red';
+            ctx.fillText("罠に決まってるでしょ。", CANVAS_WIDTH/2, 385);
+        }
+        
+        ctx.fillStyle = '#2a2a2a';
+        ctx.fillRect(realStartBtn.x, realStartBtn.y, realStartBtn.w, realStartBtn.h);
+        ctx.fillStyle = '#555';
+        ctx.font = '10px sans-serif';
+        ctx.fillText("start", realStartBtn.x, realStartBtn.y - 5);
+
+    } else {
+        // --- Game World (Camera applied) ---
+        ctx.save();
+        ctx.translate(-Math.floor(cameraX), 0);
+
+        // Blood
+        ctx.fillStyle = '#880000';
+        deathHistory.forEach(pos => {
+            ctx.font = '20px sans-serif';
+            ctx.fillText('✕', pos.x, pos.y);
+        });
+
+        entities.forEach(e => e.draw());
+
+        if (!player.dead) {
+            ctx.fillStyle = player.color;
+            ctx.fillRect(player.x, player.y, player.w, player.h);
+            ctx.fillStyle = 'black';
+            ctx.fillRect(player.x + 4, player.y + 4, 4, 4);
+            ctx.fillRect(player.x + 12, player.y + 4, 4, 4);
+        }
+        
+        particles.forEach(p => p.draw());
+
+        ctx.restore(); // End Camera
+
+        // --- UI (Fixed on screen) ---
+        if (currentState === STATES.GAMEOVER) {
+            ctx.fillStyle = 'rgba(0,0,0,0.7)';
+            ctx.fillRect(0,0,CANVAS_WIDTH, CANVAS_HEIGHT);
+            ctx.fillStyle = 'white';
+            ctx.font = '30px Courier New';
+            ctx.textAlign = 'center';
+            const lines = lastMockery.split('\n');
+            lines.forEach((line, i) => {
+                ctx.fillText(line, CANVAS_WIDTH/2, CANVAS_HEIGHT/2 + i * 40);
+            });
+            ctx.font = '20px Courier New';
+            ctx.fillText("Tap / Space to Retry", CANVAS_WIDTH/2, CANVAS_HEIGHT/2 + 100);
+        }
+        
+        if (currentState === STATES.WIN) {
+            ctx.fillStyle = 'yellow';
+            ctx.font = '40px Courier New';
+            ctx.textAlign = 'center';
+            ctx.fillText("YOU ESCAPED!", CANVAS_WIDTH/2, CANVAS_HEIGHT/2);
+        }
+
+        // --- Mobile Controls Visualizer (New) ---
+        
+        // Left Zone (Move)
+        ctx.fillStyle = touchInput.left ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)';
+        ctx.fillRect(0, CANVAS_HEIGHT - 150, CANVAS_WIDTH * 0.225, 150); // Left
+        
+        ctx.fillStyle = touchInput.right ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)';
+        ctx.fillRect(CANVAS_WIDTH * 0.225, CANVAS_HEIGHT - 150, CANVAS_WIDTH * 0.225, 150); // Right
+        
+        // Separator line
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+        ctx.beginPath();
+        ctx.moveTo(CANVAS_WIDTH * 0.225, CANVAS_HEIGHT - 150);
+        ctx.lineTo(CANVAS_WIDTH * 0.225, CANVAS_HEIGHT);
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.font = '40px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText("←", CANVAS_WIDTH * 0.1125, CANVAS_HEIGHT - 60);
+        ctx.fillText("→", CANVAS_WIDTH * 0.3375, CANVAS_HEIGHT - 60);
+        
+        // Right Zone (Jump)
+        ctx.fillStyle = touchInput.jump ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)';
+        ctx.fillRect(CANVAS_WIDTH * 0.5, CANVAS_HEIGHT - 150, CANVAS_WIDTH * 0.5, 150);
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.fillText("JUMP", CANVAS_WIDTH * 0.75, CANVAS_HEIGHT - 60);
+
+        // Touch Indicators (Where fingers actually are)
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        touchInput.activeTouches.forEach(t => {
+            ctx.beginPath();
+            ctx.arc(t.x, t.y, 20, 0, Math.PI * 2);
+            ctx.fill();
+        });
+    }
+
+    ctx.restore();
+
+    // Glitch effect
+    if (glitchIntensity > 1 || currentState === STATES.GAMEOVER && Math.random() > 0.9) {
+        const sliceHeight = Math.random() * 50;
+        const sliceY = Math.random() * CANVAS_HEIGHT;
+        const sliceOffset = (Math.random() - 0.5) * 20;
+        try {
+            const imageData = ctx.getImageData(0, sliceY, CANVAS_WIDTH, sliceHeight);
+            ctx.putImageData(imageData, sliceOffset, sliceY);
+        } catch(e) {}
+    }
+}
+
+function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+loadPersistence();
+gameLoop();
+
+</script>
+</body>
+</html>
