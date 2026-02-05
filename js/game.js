@@ -324,12 +324,12 @@ class Player {
         // Jump
         if (jump && !this.jumpLocked) {
             if (this.grounded) {
-                this.vy = -JUMP_FORCE;
+                this.vy = -JUMP_FORCE * gravityDir;
                 this.grounded = false;
                 this.jumpLocked = true;
                 playSound('jump');
             } else if (this.wallSliding) {
-                this.vy = -WALL_JUMP_FORCE_Y;
+                this.vy = -WALL_JUMP_FORCE_Y * gravityDir;
                 this.vx = -this.wallDir * WALL_JUMP_FORCE_X;
                 this.wallSliding = false;
                 this.jumpLocked = true;
@@ -342,14 +342,14 @@ class Player {
         }
 
         // Physics
-        this.vy += GRAVITY;
+        this.vy += GRAVITY * gravityDir;
         this.x += this.vx;
         this.y += this.vy;
 
         this.checkCollisions();
 
         // Bounds
-        if (this.y > CANVAS_HEIGHT + 200) this.die("落下");
+        if (this.y > CANVAS_HEIGHT + 200 || this.y < -200) this.die("落下");
     }
 
     checkCollisions() {
@@ -365,8 +365,13 @@ class Player {
 
                 const colDir = this.getCollisionDir(block);
 
-                if (colDir === 'b') {
-                    this.y = block.y - this.h;
+                // Normal Gravity: Land on 'b' (bottom collision means block is below player)
+                // Inverted Gravity: Land on 't' (top collision means block is above player)
+                const landDir = gravityDir === 1 ? 'b' : 't';
+                const headDir = gravityDir === 1 ? 't' : 'b';
+
+                if (colDir === landDir) {
+                    this.y = landDir === 'b' ? block.y - this.h : block.y + block.h;
                     this.vy = 0;
                     this.grounded = true;
                     if (block.type === 'moving_block') {
@@ -376,8 +381,8 @@ class Player {
                     if (block.type === 'invisible_block') {
                         block.revealed = true;
                     }
-                } else if (colDir === 't') {
-                    this.y = block.y + block.h;
+                } else if (colDir === headDir) {
+                    this.y = headDir === 't' ? block.y + block.h : block.y - this.h;
                     this.vy = 0;
                     if (block.falling || block.type === 'moving_block') this.die("圧死");
                 } else if (colDir === 'l') {
@@ -408,8 +413,8 @@ class Player {
             } else if (block.type === 'launchpad') {
                 // 吹っ飛ばし床
                 const colDir = this.getCollisionDir(block);
-                if (colDir === 'b') {
-                    this.y = block.y - this.h;
+                if (colDir === (gravityDir === 1 ? 'b' : 't')) {
+                    this.y = gravityDir === 1 ? block.y - this.h : block.y + block.h;
                     block.trigger(this);
                 }
             } else if (block.type === 'fake_spike') {
@@ -419,8 +424,10 @@ class Player {
             } else if (block.type === 'trust_block') {
                 if (block.destroyed) continue;
                 const colDir = this.getCollisionDir(block);
-                if (colDir === 'b') {
-                    this.y = block.y - this.h;
+                // Trust block logic simplified for gravity
+                const landDir = gravityDir === 1 ? 'b' : 't';
+                if (colDir === landDir) {
+                    this.y = landDir === 'b' ? block.y - this.h : block.y + block.h;
                     this.vy = 0;
                     this.grounded = true;
                     block.trigger();
@@ -434,6 +441,10 @@ class Player {
                     this.x = block.x + block.w;
                     this.vx = 0;
                 }
+            } else if (block.type === 'gravity_switch') {
+                if (this.AABB(block)) block.trigger(this);
+            } else if (block.type === 'laser_trap') {
+                if (this.AABB(block) && block.active) this.die("蒸発");
             }
         }
     }
@@ -909,17 +920,110 @@ class TrustBlock extends Block {
     }
 }
 
-// --- Stage Unlock System ---
-let stageUnlocks = { 1: true, 2: true }; // デフォルトで両方遊べる
+// 重力反転スイッチ
+class GravitySwitch {
+    constructor(x, y) {
+        this.x = x; this.y = y; this.w = 40; this.h = 40;
+        this.type = 'gravity_switch';
+        this.cooldown = 0;
+    }
+    update() {
+        if (this.cooldown > 0) this.cooldown--;
+    }
+    draw() {
+        ctx.fillStyle = this.cooldown > 0 ? '#555' : '#800080';
+        ctx.fillRect(this.x, this.y, this.w, this.h);
+        ctx.strokeStyle = '#fff';
+        ctx.strokeRect(this.x, this.y, this.w, this.h);
 
-function loadStageUnlocks() {
-    const data = localStorage.getItem(STORAGE_KEY_STAGES);
-    if (data) stageUnlocks = JSON.parse(data);
+        ctx.fillStyle = '#fff';
+        ctx.font = '20px monospace';
+        ctx.fillText(gravityDir === 1 ? '↑' : '↓', this.x + 10, this.y + 28);
+    }
+    trigger(p) {
+        if (this.cooldown > 0) return;
+        gravityDir *= -1;
+        this.cooldown = 60;
+        playSound('jump'); // 独特な音にしたいが一旦これで
+        shakeIntensity = 10;
+        // 反転時の位置補正（埋まり防止）
+        p.y += gravityDir * 10;
+        p.vy = 0;
+    }
 }
 
-function saveStageUnlock(stage) {
-    stageUnlocks[stage] = true;
-    localStorage.setItem(STORAGE_KEY_STAGES, JSON.stringify(stageUnlocks));
+// 巨大レーザー（警告→発射）
+class LaserTrap {
+    constructor(x, y, w, h, interval, offset) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.type = 'laser_trap';
+        this.interval = interval;
+        this.timer = offset;
+        this.state = 0; // 0: safe, 1: warning, 2: active
+        this.active = false;
+    }
+    update() {
+        this.timer++;
+        const cycle = this.timer % this.interval;
+
+        if (cycle < this.interval - 120) {
+            this.state = 0; // Safe
+            this.active = false;
+        } else if (cycle < this.interval - 60) {
+            this.state = 1; // Warning
+            this.active = false;
+        } else {
+            this.state = 2; // Active
+            this.active = true;
+            if (cycle === this.interval - 60) {
+                playSound('explosion'); // 簡易的な発射音
+                shakeIntensity = 5;
+            }
+        }
+    }
+    draw() {
+        if (this.state === 1) {
+            // Warning Line
+            ctx.fillStyle = `rgba(255, 0, 0, 0.3)`;
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+            ctx.strokeStyle = 'red';
+            ctx.beginPath();
+            ctx.moveTo(this.x, this.y + this.h / 2);
+            ctx.lineTo(this.x + this.w, this.y + this.h / 2);
+            ctx.stroke();
+        } else if (this.state === 2) {
+            // Active Laser
+            ctx.fillStyle = '#ff0000';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+            ctx.fillStyle = '#ffff00';
+            ctx.fillRect(this.x, this.y + this.h / 3, this.w, this.h / 3);
+        }
+    }
+}
+
+// --- Stage Unlock System ---
+let gameProgress = {
+    1: { unlocked: true, cleared: false },
+    2: { unlocked: true, cleared: false },
+    3: { unlocked: true, cleared: false } // テスト用に開放
+};
+const STORAGE_KEY_PROGRESS = 'unfair_progress_v4';
+
+function loadStageUnlocks() {
+    const data = localStorage.getItem(STORAGE_KEY_PROGRESS);
+    if (data) {
+        gameProgress = JSON.parse(data);
+        // 新しいステージが追加された場合の互換性維持
+        if (!gameProgress[3]) gameProgress[3] = { unlocked: false, cleared: false };
+    }
+}
+
+function saveStageClear(stage) {
+    gameProgress[stage].cleared = true;
+    if (gameProgress[stage + 1]) {
+        gameProgress[stage + 1].unlocked = true;
+    }
+    localStorage.setItem(STORAGE_KEY_PROGRESS, JSON.stringify(gameProgress));
 }
 
 // --- Globals ---
@@ -927,6 +1031,12 @@ let player;
 let entities = [];
 let particles = [];
 let titleTrapped = false;
+let gravityDir = 1; // 1: normal, -1: inverted
+
+// ... (initLevelなどの間にあるコードは変更なしと仮定できるが、ここで省略するとツールがエラーになるので注意)
+// 実際には replace_file_content はピンポイントで修正する方が良いので、ここではデータ構造部分とUI部分を分けて修正します。
+// まずはデータ構造変数の部分だけ変更します。
+
 
 // --- Level Generation ---
 function initLevel() {
@@ -934,6 +1044,9 @@ function initLevel() {
     if (currentState === STATES.TITLE || currentState === STATES.STAGE_SELECT) {
         spawnPoint = { x: 50, y: 400 };
     }
+
+    // Reset Gravity
+    gravityDir = 1;
 
     player = new Player();
     entities = [];
@@ -944,6 +1057,8 @@ function initLevel() {
         initStage1();
     } else if (currentStage === 2) {
         initStage2();
+    } else if (currentStage === 3) {
+        initStage3();
     }
 }
 
@@ -1115,13 +1230,98 @@ function initStage2() {
     entities.push(new Trap(0, 580, 1800, 20));
 }
 
+// --- STAGE 3: Chaos Dimension ---
+function initStage3() {
+    // === PART 1: 重力への挑戦 ===
+    entities.push(new Block(0, 500, 300, 100));
+
+    // 重力反転スイッチ
+    entities.push(new GravitySwitch(300, 460));
+
+    // 天井歩行エリア（床は棘）
+    entities.push(new Trap(350, 580, 600, 20)); // 下は棘
+
+    // 天井（ここを歩く）
+    entities.push(new Block(300, -100, 800, 150));
+    // 天井の障害物
+    entities.push(new Block(500, 50, 20, 100)); // 天井から突き出た壁
+
+    // 重力戻しスイッチ（天井にあるのでy座標注意）
+    // 天井y=50なので、スイッチはy=50に配置（プレイヤーは頭を下にしてる）
+    // プレイヤー身長20、スイッチ40。
+    // 天井y=50、プレイヤーはy=50より下にいる。
+    // スイッチを天井からぶら下げるには... Block(y=-100, h=150) -> bottom edge is y=50.
+    // スイッチは y=50 に置くと、重力反転時はブロックの上に乗る感覚で天井に接地している。
+    // 上重力のとき、GravitySwitchは普通に描画してOK（見た目は↑↓で判断）。
+    entities.push(new GravitySwitch(900, 50));
+
+    // === PART 2: レーザー地帯 ===
+    entities.push(new Block(1000, 400, 150, 200)); // 着地地点
+
+    // レーザー通路
+    entities.push(new Block(1150, 500, 1000, 100));
+
+    // レーザートラップ (interval: 180frame = 3sec)
+    // 逃げ場所として低いブロックを置く
+    entities.push(new Block(1350, 420, 20, 80)); // 遮蔽物
+
+    // レーザー本体 (y=350, h=50 の高さに発射)
+    entities.push(new LaserTrap(1200, 350, 800, 50, 240, 0));
+
+    // 2つ目の遮蔽物
+    entities.push(new Block(1650, 420, 20, 80));
+
+    // === PART 3: グリッチと崩壊 ===
+    entities.push(new Block(2200, 400, 200, 20));
+
+    // トリガーでグリッチ発動（TriggerZoneを流用してglitchIntensityをいじる）
+    // 既存のTriggerZoneはtargetIdでfallingなどを起動するが、ここでは拡張が必要
+    // 簡易的にTriggerZoneで「glitch」というIDを渡すとupdateで拾うようにするか、
+    // ここで専用のトリガーブロックを置くのが綺麗。
+    // 今回は `initStage3` 内で、updateループでチェックする特別なエンティティとして無名クラスをpushする
+    entities.push({
+        x: 2300, y: 300, w: 50, h: 200, type: 'trigger',
+        draw: function () { },
+        activate: function () {
+            glitchIntensity = 50;
+            if (player) player.vy = -30 * gravityDir; // びっくりジャンプ
+            playSound('explosion');
+        },
+        AABB: function (p) { return p.x < this.x + this.w && p.x + p.w > this.x && p.y < this.y + this.h && p.y + p.h > this.y; }
+    });
+
+    // 偽のエンディングへの道
+    entities.push(new Block(2500, 200, 100, 20));
+
+    // THE END ? (文字ブロック)
+    // 最後の重力反転 -> 天井へ
+    entities.push(new GravitySwitch(2600, 160));
+
+    // 天井の足場
+    entities.push(new Block(2700, -50, 400, 50));
+
+    // 偽ゴール（偽エンディング）
+    entities.push(new Block(3000, 0, 100, 400)); // 壁
+    entities.push(new Goal(2900, 100, true)); // 偽ゴール
+
+    // 本物のゴールは、重力反転せずに下へ落ちた先にある隠し足場
+    // 重力スイッチを避けて下へ降りる（実はスイッチの右側が通り抜けられるとか）
+
+    entities.push(new InvisibleBlock(2700, 500, 100, 20));
+    entities.push(new Goal(2720, 460, false));
+
+    // 奈落
+    entities.push(new Trap(0, 580, 5000, 20)); // 全体
+}
+
 // --- Title Screen Logic ---
 let realStartBtn = { x: 780, y: 580, w: 20, h: 20 };
 let fakeStartBtn = { x: 300, y: 350, w: 200, h: 60 };
 
 // Stage Select Buttons
-let stageBtn1 = { x: 200, y: 280, w: 180, h: 80 };
-let stageBtn2 = { x: 420, y: 280, w: 180, h: 80 };
+let stageBtn1 = { x: 110, y: 280, w: 180, h: 80 };
+let stageBtn2 = { x: 310, y: 280, w: 180, h: 80 };
+let stageBtn3 = { x: 510, y: 280, w: 180, h: 80 };
 
 function checkTitleInteraction(clickX, clickY) {
     let cx = mouse.x;
@@ -1165,8 +1365,16 @@ function checkTitleInteraction(clickX, clickY) {
             }
             // Stage 2
             if (cx > stageBtn2.x && cx < stageBtn2.x + stageBtn2.w &&
-                cy > stageBtn2.y && cy < stageBtn2.y + stageBtn2.h) {
+                cy > stageBtn2.y && cy < stageBtn2.y + stageBtn2.h && gameProgress[2].unlocked) {
                 currentStage = 2;
+                currentState = STATES.PLAYING;
+                initLevel();
+                startBGM();
+            }
+            // Stage 3
+            if (cx > stageBtn3.x && cx < stageBtn3.x + stageBtn3.w &&
+                cy > stageBtn3.y && cy < stageBtn3.y + stageBtn3.h && gameProgress[3].unlocked) {
+                currentStage = 3;
                 currentState = STATES.PLAYING;
                 initLevel();
                 startBGM();
@@ -1186,9 +1394,8 @@ function resetGame() {
         player.y = spawnPoint.y;
     } else if (currentState === STATES.WIN) {
         // ステージクリア！
-        if (currentStage === 1) {
-            saveStageUnlock(2);
-        }
+        saveStageClear(currentStage);
+
         currentState = STATES.STAGE_SELECT;
         spawnPoint = { x: 50, y: 400 }; // スポーンリセット
     }
@@ -1265,27 +1472,39 @@ function draw() {
         ctx.fillText("SELECT STAGE", CANVAS_WIDTH / 2, 150);
         ctx.fillText(`Total Deaths: ${deathCount}`, CANVAS_WIDTH / 2, 500);
 
-        // Stage 1 Button
-        ctx.fillStyle = stageUnlocks[1] ? '#444' : '#222';
-        ctx.fillRect(stageBtn1.x, stageBtn1.y, stageBtn1.w, stageBtn1.h);
-        ctx.strokeStyle = '#fff';
-        ctx.strokeRect(stageBtn1.x, stageBtn1.y, stageBtn1.w, stageBtn1.h);
-        ctx.fillStyle = '#fff';
-        ctx.font = '24px Courier New';
-        ctx.fillText("STAGE 1", stageBtn1.x + stageBtn1.w / 2, stageBtn1.y + 45);
-        ctx.font = '14px Courier New';
-        ctx.fillText("The Beginning", stageBtn1.x + stageBtn1.w / 2, stageBtn1.y + 70);
+        // Helper to draw stage button
+        const drawStageBtn = (btn, num, title, subtitle) => {
+            const data = gameProgress[num];
+            const unlocked = data.unlocked;
 
-        // Stage 2 Button
-        ctx.fillStyle = stageUnlocks[2] ? '#444' : '#222';
-        ctx.fillRect(stageBtn2.x, stageBtn2.y, stageBtn2.w, stageBtn2.h);
-        ctx.strokeStyle = stageUnlocks[2] ? '#fff' : '#555';
-        ctx.strokeRect(stageBtn2.x, stageBtn2.y, stageBtn2.w, stageBtn2.h);
-        ctx.fillStyle = stageUnlocks[2] ? '#fff' : '#555';
-        ctx.font = '24px Courier New';
-        ctx.fillText("STAGE 2", stageBtn2.x + stageBtn2.w / 2, stageBtn2.y + 45);
-        ctx.font = '14px Courier New';
-        ctx.fillText("Betrayal", stageBtn2.x + stageBtn2.w / 2, stageBtn2.y + 70);
+            ctx.fillStyle = unlocked ? '#444' : '#222';
+            ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+            ctx.strokeStyle = unlocked ? '#fff' : '#555';
+            ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+
+            ctx.fillStyle = unlocked ? '#fff' : '#555';
+            ctx.font = '24px Courier New';
+            ctx.fillText(`STAGE ${num}`, btn.x + btn.w / 2, btn.y + 35);
+            ctx.font = '12px Courier New';
+            ctx.fillText(unlocked ? subtitle : "LOCKED", btn.x + btn.w / 2, btn.y + 60);
+
+            if (data.cleared) {
+                ctx.save();
+                ctx.translate(btn.x + btn.w - 30, btn.y + 20);
+                ctx.rotate(0.2);
+                ctx.fillStyle = '#FFD700'; // Gold
+                ctx.font = 'bold 16px sans-serif';
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 2;
+                ctx.strokeText("CLEAR!", 0, 0);
+                ctx.fillText("CLEAR!", 0, 0);
+                ctx.restore();
+            }
+        };
+
+        drawStageBtn(stageBtn1, 1, "The Beginning", "Tutorial?");
+        drawStageBtn(stageBtn2, 2, "Betrayal", "Trust Issues");
+        drawStageBtn(stageBtn3, 3, "Chaos Mode", "???");
 
     } else {
         ctx.save();
