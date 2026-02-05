@@ -1519,63 +1519,60 @@ function initStage3() {
 // --- STAGE 4: Frustration & Glory ---
 function initStage4() {
     // === PART 1: Frustration (スクロール & 精密操作) ===
-    entities.push(new Block(0, 400, 300, 100)); // Start (高さ調整)
+    entities.push(new Block(0, 350, 400, 250)); // Start (広い足場)
 
-    // 狭い通路 (上下に棘)
-    for (let i = 0; i < 10; i++) {
-        let bx = 400 + i * 150;
-        // 上の壁 (棘付き)
-        entities.push(new Block(bx, 0, 150, 200));
-        entities.push(new Trap(bx, 200, 150, 20));
+    // 狭い通路 (上下に棘) - バランス調整版
+    for (let i = 0; i < 8; i++) {
+        let bx = 450 + i * 120; // 間隔を縮小
+        // 上の壁 (棘付き) - 隙間を広げる
+        entities.push(new Block(bx, 0, 120, 150));
+        entities.push(new Trap(bx, 150, 120, 20));
         // 下の壁 (棘付き)
-        entities.push(new Block(bx, 400, 150, 200));
-        entities.push(new Trap(bx, 380, 150, 20));
+        entities.push(new Block(bx, 450, 120, 150));
+        entities.push(new Trap(bx, 430, 120, 20));
 
-        // 間の足場 (小さくて飛び移る必要がある)
-        if (i % 2 === 0) {
-            entities.push(new Block(bx + 50, 300, 80, 20)); // 足場拡張
-        }
+        // 毎区間に足場を配置（飛び移れる距離）
+        entities.push(new Block(bx + 30, 300, 60, 20));
     }
 
-    // 追尾ミサイル (執拗に追いかける)
-    entities.push(new HomingMissile(500, 100));
-    entities.push(new HomingMissile(1000, 100));
-    entities.push(new HomingMissile(1500, 500));
+    // 追尾ミサイル (少し減らす)
+    entities.push(new HomingMissile(700, 100));
+    entities.push(new HomingMissile(1200, 450));
 
     // === PART 2: The Turn (無敵化) ===
-    entities.push(new Block(1900, 250, 200, 50));
+    entities.push(new Block(1500, 300, 200, 50));
 
     // 破壊可能な壁で行き止まり
     for (let y = 0; y < 600; y += 40) {
-        entities.push(new BreakableBlock(2200, y, 40, 40));
+        entities.push(new BreakableBlock(1800, y, 40, 40));
     }
 
     // Power Star!
-    entities.push(new PowerStar(2000, 200));
+    entities.push(new PowerStar(1600, 250));
 
     // === PART 3: Glory (破壊の宴) ===
     // 破壊可能ブロックと敵の山
-    for (let i = 0; i < 20; i++) {
-        let bx = 2300 + i * 100;
+    for (let i = 0; i < 15; i++) {
+        let bx = 1900 + i * 80;
         // ランダムな高さにブロック
-        entities.push(new BreakableBlock(bx, 400 - Math.random() * 300, 60, 60));
+        entities.push(new BreakableBlock(bx, 350 - Math.random() * 200, 50, 50));
         // 敵
-        entities.push(new Enemy(bx, 500, 30, 30, 100, 1));
-        // 大量のミサイル
-        if (i % 3 === 0) entities.push(new HomingMissile(bx, 100));
+        entities.push(new Enemy(bx, 500, 30, 30, 80, 1));
+        // ミサイル（少なめ）
+        if (i % 5 === 0) entities.push(new HomingMissile(bx, 100));
     }
 
     // 地面も破壊可能にしちゃう
-    for (let i = 0; i < 30; i++) {
-        entities.push(new BreakableBlock(2300 + i * 100, 550, 100, 50));
+    for (let i = 0; i < 20; i++) {
+        entities.push(new BreakableBlock(1900 + i * 80, 550, 80, 50));
     }
 
     // ゴール
-    entities.push(new Block(4500, 500, 200, 100));
-    entities.push(new Goal(4600, 460, false));
+    entities.push(new Block(3200, 500, 200, 100));
+    entities.push(new Goal(3300, 460, false));
 
     // 奈落
-    entities.push(new Trap(0, 580, 5000, 20));
+    entities.push(new Trap(0, 580, 4000, 20));
 }
 
 // --- Title Screen Logic ---
@@ -1692,7 +1689,7 @@ function update() {
             cameraX += 3; // Fast!
             if (player.x < cameraX - 50) player.die("スクロール死");
             // Stop at goal area
-            if (cameraX > 4000) cameraX = 4000;
+            if (cameraX > 2800) cameraX = 2800;
 
             // Keep player within screen bounds (right side)
             if (player.x > cameraX + CANVAS_WIDTH - player.w) {
