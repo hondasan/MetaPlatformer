@@ -1521,17 +1521,17 @@ function initStage4() {
     // === PART 1: Frustration (スクロール & 精密操作) ===
     entities.push(new Block(0, 350, 400, 250)); // Start (広い足場)
 
-    // 狭い通路 (上下に棘) - バランス調整版
+    // 狭い通路 (上下に棘) - さらに緩和
     for (let i = 0; i < 8; i++) {
-        let bx = 450 + i * 120; // 間隔を縮小
-        // 上の壁 (棘付き) - 隙間を広げる
-        entities.push(new Block(bx, 0, 120, 150));
-        entities.push(new Trap(bx, 150, 120, 20));
+        let bx = 450 + i * 120;
+        // 上の壁 (棘なし・安全)
+        entities.push(new Block(bx, 0, 120, 50));
+
         // 下の壁 (棘付き)
         entities.push(new Block(bx, 450, 120, 150));
         entities.push(new Trap(bx, 430, 120, 20));
 
-        // 毎区間に足場を配置（飛び移れる距離）
+        // 毎区間に足場を配置
         entities.push(new Block(bx + 30, 300, 60, 20));
     }
 
