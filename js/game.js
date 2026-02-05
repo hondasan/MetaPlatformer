@@ -185,8 +185,9 @@ function loadPersistence() {
 
 function saveDeath(x, y) {
     deathCount++;
-    deathHistory.push({ x: Math.round(x), y: Math.round(y) });
-    if (deathHistory.length > 200) deathHistory.shift();
+    deathHistory.push({ x: x, y: y, stage: currentStage });
+    // Limit history
+    if (deathHistory.length > 500) deathHistory.shift();
 
     localStorage.setItem(STORAGE_KEY_DEATHS, JSON.stringify(deathHistory));
     localStorage.setItem(STORAGE_KEY_COUNT, deathCount);
@@ -302,6 +303,8 @@ class Player {
         this.wallDir = 0;
         this.dead = false;
         this.color = '#00ffcc';
+        this.invincible = false;
+        this.invincibleTimer = 0;
     }
 
     update() {
@@ -345,6 +348,25 @@ class Player {
         this.vy += GRAVITY * gravityDir;
         this.x += this.vx;
         this.y += this.vy;
+
+        // Invincible Effect
+        if (this.invincible) {
+            this.invincibleTimer++;
+            this.color = this.invincibleTimer % 4 < 2 ? '#fff' : '#ff00ff'; // Rainbow-ish
+            // Speed up
+            if (Math.abs(this.vx) < MAX_SPEED * 1.5) this.vx *= 1.05;
+
+            // Limit Duration (10 sec)
+            if (this.invincibleTimer > 600) {
+                this.invincible = false;
+                this.invincibleTimer = 0;
+            } else if (this.invincibleTimer > 500) {
+                // Blink warning
+                if (this.invincibleTimer % 10 < 5) this.color = '#00ffcc';
+            }
+        } else {
+            this.color = '#00ffcc';
+        }
 
         this.checkCollisions();
 
@@ -444,7 +466,52 @@ class Player {
             } else if (block.type === 'gravity_switch') {
                 if (this.AABB(block)) block.trigger(this);
             } else if (block.type === 'laser_trap') {
-                if (this.AABB(block) && block.active) this.die("蒸発");
+                if (this.AABB(block) && block.active) {
+                    if (this.invincible) {
+                        // Laser cannot be destroyed but ignored? or destroy emitter?
+                    } else {
+                        this.die("蒸発");
+                    }
+                }
+            } else if (block.type === 'homing_missile' || block.type === 'enemy') {
+                if (this.AABB(block)) {
+                    if (this.invincible) {
+                        if (block.destroy) block.destroy();
+                    } else {
+                        this.die("爆殺");
+                    }
+                }
+            } else if (block.type === 'breakable_block') {
+                if (block.destroyed) continue;
+                if (this.invincible) {
+                    if (this.AABB(block)) block.destroy();
+                } else {
+                    // Treat as normal block if not invincible
+                    const colDir = this.getCollisionDir(block);
+                    const landDir = gravityDir === 1 ? 'b' : 't';
+                    const headDir = gravityDir === 1 ? 't' : 'b';
+
+                    if (colDir === landDir) {
+                        this.y = landDir === 'b' ? block.y - this.h : block.y + block.h;
+                        this.vy = 0;
+                        this.grounded = true;
+                    } else if (colDir === headDir) {
+                        this.y = headDir === 't' ? block.y + block.h : block.y - this.h;
+                        this.vy = 0;
+                    } else if (colDir === 'l') {
+                        this.x = block.x - this.w;
+                        this.vx = 0;
+                        this.wallSliding = true;
+                        this.wallDir = 1;
+                    } else if (colDir === 'r') {
+                        this.x = block.x + block.w;
+                        this.vx = 0;
+                        this.wallSliding = true;
+                        this.wallDir = -1;
+                    }
+                }
+            } else if (block.type === 'power_star') {
+                if (this.AABB(block)) block.trigger();
             }
         }
     }
@@ -478,6 +545,8 @@ class Player {
 
     die(reason) {
         if (this.dead) return;
+        if (this.invincible && reason !== "落下" && reason !== "スクロール死") return; // 無敵なら死なない（落下とスクロール死以外）
+
         this.dead = true;
         saveDeath(this.x, this.y);
         shakeIntensity = 20;
@@ -501,12 +570,22 @@ class Block {
         this.fake = fake;
         this.color = '#aaa';
         if (fake) this.color = '#a0a0a0';
+        this.destroyed = false;
     }
     draw() {
+        if (this.destroyed) return;
         ctx.fillStyle = this.color;
         ctx.fillRect(this.x, this.y, this.w, this.h);
         ctx.strokeStyle = '#555';
         ctx.strokeRect(this.x, this.y, this.w, this.h);
+    }
+    destroy() {
+        if (this.destroyed) return;
+        this.destroyed = true;
+        this.fake = true; // Disable collision
+        playSound('explosion');
+        shakeIntensity = 5;
+        for (let i = 0; i < 10; i++) particles.push(new Particle(this.x + this.w / 2, this.y + this.h / 2, this.color));
     }
 }
 
@@ -952,6 +1031,131 @@ class GravitySwitch {
     }
 }
 
+// 追尾ミサイル
+class HomingMissile {
+    constructor(x, y) {
+        this.x = x; this.y = y; this.w = 20; this.h = 10;
+        this.vx = 0; this.vy = 0;
+        this.speed = 1.8; // Reduced speed
+        this.type = 'homing_missile';
+        this.destroyed = false;
+    }
+    update() {
+        if (this.destroyed) return;
+        // Homing Logic
+        const dx = (player.x + player.w / 2) - this.x;
+        const dy = (player.y + player.h / 2) - this.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist > 0) {
+            this.vx += (dx / dist) * 0.1;
+            this.vy += (dy / dist) * 0.1;
+        }
+
+        // Cap speed
+        const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+        if (speed > this.speed) {
+            this.vx = (this.vx / speed) * this.speed;
+            this.vy = (this.vy / speed) * this.speed;
+        }
+
+        this.x += this.vx;
+        this.y += this.vy;
+
+        // 角度
+        this.angle = Math.atan2(this.vy, this.vx);
+    }
+    draw() {
+        if (this.destroyed) return;
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.angle);
+        ctx.fillStyle = 'red';
+        ctx.fillRect(-10, -5, 20, 10);
+        ctx.fillStyle = 'orange';
+        ctx.fillRect(-15, -3, 5, 6); // Thruster
+        ctx.restore();
+
+        // Trail
+        if (Math.random() > 0.5) {
+            particles.push(new Particle(this.x, this.y, '#555'));
+        }
+    }
+    destroy() {
+        if (this.destroyed) return;
+        this.destroyed = true;
+        playSound('explosion');
+        for (let i = 0; i < 15; i++) particles.push(new Particle(this.x, this.y, 'red'));
+    }
+}
+
+// 破壊可能ブロック
+class BreakableBlock {
+    constructor(x, y, w, h) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.type = 'breakable_block';
+        this.color = '#8B0000';
+        this.destroyed = false;
+    }
+    draw() {
+        if (this.destroyed) return;
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x, this.y, this.w, this.h);
+        ctx.fillStyle = '#ff4444'; // Cracks
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y);
+        ctx.lineTo(this.x + this.w, this.y + this.h);
+        ctx.stroke();
+        ctx.strokeStyle = '#000';
+        ctx.strokeRect(this.x, this.y, this.w, this.h);
+    }
+    destroy() {
+        if (this.destroyed) return;
+        this.destroyed = true;
+        this.fake = true; // 当たり判定を無効化
+        playSound('explosion');
+        shakeIntensity = 5;
+        for (let i = 0; i < 10; i++) particles.push(new Particle(this.x + this.w / 2, this.y + this.h / 2, this.color));
+    }
+}
+
+// 無敵スター
+class PowerStar {
+    constructor(x, y) {
+        this.x = x; this.y = y; this.w = 30; this.h = 30;
+        this.type = 'power_star';
+        this.taken = false;
+        this.angle = 0;
+    }
+    update() {
+        this.angle += 0.1;
+    }
+    draw() {
+        if (this.taken) return;
+        ctx.save();
+        ctx.translate(this.x + 15, this.y + 15);
+        ctx.rotate(this.angle);
+        ctx.fillStyle = `hsl(${frameCount % 360}, 100%, 50%)`;
+        ctx.beginPath();
+        for (let i = 0; i < 5; i++) {
+            ctx.lineTo(Math.cos((18 + i * 72) * Math.PI / 180) * 15,
+                -Math.sin((18 + i * 72) * Math.PI / 180) * 15);
+            ctx.lineTo(Math.cos((54 + i * 72) * Math.PI / 180) * 7,
+                -Math.sin((54 + i * 72) * Math.PI / 180) * 7);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+    trigger() {
+        if (this.taken) return;
+        this.taken = true;
+        player.invincible = true;
+        playSound('win'); // 仮のパワーアップ音
+        shakeIntensity = 20;
+    }
+}
+
 // 巨大レーザー（警告→発射）
 class LaserTrap {
     constructor(x, y, w, h, interval, offset) {
@@ -983,14 +1187,6 @@ class LaserTrap {
     }
     draw() {
         if (this.state === 1) {
-            // Warning Line
-            ctx.fillStyle = `rgba(255, 0, 0, 0.3)`;
-            ctx.fillRect(this.x, this.y, this.w, this.h);
-            ctx.strokeStyle = 'red';
-            ctx.beginPath();
-            ctx.moveTo(this.x, this.y + this.h / 2);
-            ctx.lineTo(this.x + this.w, this.y + this.h / 2);
-            ctx.stroke();
         } else if (this.state === 2) {
             // Active Laser
             ctx.fillStyle = '#ff0000';
@@ -1005,7 +1201,9 @@ class LaserTrap {
 let gameProgress = {
     1: { unlocked: true, cleared: false },
     2: { unlocked: true, cleared: false },
-    3: { unlocked: true, cleared: false } // テスト用に開放
+    3: { unlocked: true, cleared: false },
+    4: { unlocked: true, cleared: false }, // テスト用に開放
+    5: { unlocked: false, cleared: false } // 新しいステージ
 };
 const STORAGE_KEY_PROGRESS = 'unfair_progress_v4';
 
@@ -1015,6 +1213,8 @@ function loadStageUnlocks() {
         gameProgress = JSON.parse(data);
         // 新しいステージが追加された場合の互換性維持
         if (!gameProgress[3]) gameProgress[3] = { unlocked: false, cleared: false };
+        if (!gameProgress[4]) gameProgress[4] = { unlocked: false, cleared: false };
+        if (!gameProgress[5]) gameProgress[5] = { unlocked: false, cleared: false };
     }
 }
 
@@ -1059,6 +1259,8 @@ function initLevel() {
         initStage2();
     } else if (currentStage === 3) {
         initStage3();
+    } else if (currentStage === 4) {
+        initStage4();
     }
 }
 
@@ -1314,6 +1516,68 @@ function initStage3() {
     entities.push(new Trap(0, 580, 5000, 20)); // 全体
 }
 
+// --- STAGE 4: Frustration & Glory ---
+function initStage4() {
+    // === PART 1: Frustration (スクロール & 精密操作) ===
+    entities.push(new Block(0, 400, 300, 100)); // Start (高さ調整)
+
+    // 狭い通路 (上下に棘)
+    for (let i = 0; i < 10; i++) {
+        let bx = 400 + i * 150;
+        // 上の壁 (棘付き)
+        entities.push(new Block(bx, 0, 150, 200));
+        entities.push(new Trap(bx, 200, 150, 20));
+        // 下の壁 (棘付き)
+        entities.push(new Block(bx, 400, 150, 200));
+        entities.push(new Trap(bx, 380, 150, 20));
+
+        // 間の足場 (小さくて飛び移る必要がある)
+        if (i % 2 === 0) {
+            entities.push(new Block(bx + 50, 300, 80, 20)); // 足場拡張
+        }
+    }
+
+    // 追尾ミサイル (執拗に追いかける)
+    entities.push(new HomingMissile(500, 100));
+    entities.push(new HomingMissile(1000, 100));
+    entities.push(new HomingMissile(1500, 500));
+
+    // === PART 2: The Turn (無敵化) ===
+    entities.push(new Block(1900, 250, 200, 50));
+
+    // 破壊可能な壁で行き止まり
+    for (let y = 0; y < 600; y += 40) {
+        entities.push(new BreakableBlock(2200, y, 40, 40));
+    }
+
+    // Power Star!
+    entities.push(new PowerStar(2000, 200));
+
+    // === PART 3: Glory (破壊の宴) ===
+    // 破壊可能ブロックと敵の山
+    for (let i = 0; i < 20; i++) {
+        let bx = 2300 + i * 100;
+        // ランダムな高さにブロック
+        entities.push(new BreakableBlock(bx, 400 - Math.random() * 300, 60, 60));
+        // 敵
+        entities.push(new Enemy(bx, 500, 30, 30, 100, 1));
+        // 大量のミサイル
+        if (i % 3 === 0) entities.push(new HomingMissile(bx, 100));
+    }
+
+    // 地面も破壊可能にしちゃう
+    for (let i = 0; i < 30; i++) {
+        entities.push(new BreakableBlock(2300 + i * 100, 550, 100, 50));
+    }
+
+    // ゴール
+    entities.push(new Block(4500, 500, 200, 100));
+    entities.push(new Goal(4600, 460, false));
+
+    // 奈落
+    entities.push(new Trap(0, 580, 5000, 20));
+}
+
 // --- Title Screen Logic ---
 let realStartBtn = { x: 780, y: 580, w: 20, h: 20 };
 let fakeStartBtn = { x: 300, y: 350, w: 200, h: 60 };
@@ -1322,6 +1586,7 @@ let fakeStartBtn = { x: 300, y: 350, w: 200, h: 60 };
 let stageBtn1 = { x: 110, y: 280, w: 180, h: 80 };
 let stageBtn2 = { x: 310, y: 280, w: 180, h: 80 };
 let stageBtn3 = { x: 510, y: 280, w: 180, h: 80 };
+let stageBtn4 = { x: 310, y: 380, w: 180, h: 80 }; // 2段目真ん中
 
 function checkTitleInteraction(clickX, clickY) {
     let cx = mouse.x;
@@ -1379,6 +1644,14 @@ function checkTitleInteraction(clickX, clickY) {
                 initLevel();
                 startBGM();
             }
+            // Stage 4
+            if (cx > stageBtn4.x && cx < stageBtn4.x + stageBtn4.w &&
+                cy > stageBtn4.y && cy < stageBtn4.y + stageBtn4.h && gameProgress[4].unlocked) {
+                currentStage = 4;
+                currentState = STATES.PLAYING;
+                initLevel();
+                startBGM();
+            }
         }
     }
 }
@@ -1413,10 +1686,25 @@ function update() {
         player.update();
         entities.forEach(e => { if (e.update) e.update(); });
 
-        // Camera Follow - Look Ahead (Shift player to left third)
-        let targetX = player.x - CANVAS_WIDTH * 0.25;
-        if (targetX < 0) targetX = 0;
-        cameraX += (targetX - cameraX) * 0.1;
+        // Camera Follow
+        if (currentStage === 4) {
+            // Auto Scroll
+            cameraX += 3; // Fast!
+            if (player.x < cameraX - 50) player.die("スクロール死");
+            // Stop at goal area
+            if (cameraX > 4000) cameraX = 4000;
+
+            // Keep player within screen bounds (right side)
+            if (player.x > cameraX + CANVAS_WIDTH - player.w) {
+                player.x = cameraX + CANVAS_WIDTH - player.w;
+                player.vx = 0;
+            }
+        } else {
+            // Normal Camera Follow - Look Ahead
+            let targetX = player.x - CANVAS_WIDTH * 0.25;
+            if (targetX < 0) targetX = 0;
+            cameraX += (targetX - cameraX) * 0.1;
+        }
     }
 
     if ((currentState === STATES.GAMEOVER || currentState === STATES.WIN) && (touchInput.left || touchInput.right || touchInput.jump)) {
@@ -1505,6 +1793,7 @@ function draw() {
         drawStageBtn(stageBtn1, 1, "The Beginning", "Tutorial?");
         drawStageBtn(stageBtn2, 2, "Betrayal", "Trust Issues");
         drawStageBtn(stageBtn3, 3, "Chaos Mode", "???");
+        drawStageBtn(stageBtn4, 4, "Catarsis", "Destruction");
 
     } else {
         ctx.save();
@@ -1515,8 +1804,10 @@ function draw() {
 
         ctx.fillStyle = '#880000';
         deathHistory.forEach(pos => {
-            ctx.font = '20px sans-serif';
-            ctx.fillText('✕', pos.x, pos.y);
+            if (pos.stage === currentStage) {
+                ctx.font = '20px sans-serif';
+                ctx.fillText('✕', pos.x, pos.y);
+            }
         });
 
         entities.forEach(e => e.draw());
@@ -1602,6 +1893,7 @@ function draw() {
         } catch (e) { }
     }
 }
+
 
 function gameLoop() {
     update();
