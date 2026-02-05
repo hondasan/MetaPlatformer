@@ -39,6 +39,12 @@ let glitchIntensity = 0;
 // Camera
 let cameraX = 0;
 
+// Stage 6: System Malice - Global Variables
+let poisonTimer = 0;          // 遅効性の毒タイマー（フレーム数）
+let reverseControl = false;   // 操作反転フラグ
+let fakeErrorActive = false;  // 偽エラー表示中
+let fakeErrorTimer = 0;       // 偽エラータイマー
+
 // Persistence variables
 let spawnPoint = { x: 50, y: 400 };
 
@@ -311,9 +317,14 @@ class Player {
         if (this.dead) return;
 
         // Input Mixing (Keyboard + Touch)
-        const left = keys['ArrowLeft'] || touchInput.left;
-        const right = keys['ArrowRight'] || touchInput.right;
+        let left = keys['ArrowLeft'] || touchInput.left;
+        let right = keys['ArrowRight'] || touchInput.right;
         const jump = keys['Space'] || keys['KeyZ'] || keys['ArrowUp'] || touchInput.jump;
+
+        // Stage 6: ReverseZone 操作反転
+        if (reverseControl) {
+            [left, right] = [right, left];
+        }
 
         // Movement
         if (left) {
@@ -515,6 +526,26 @@ class Player {
             } else if (block.type === 'running_goal') {
                 if (this.AABB(block)) block.trigger(this);
             } else if (block.type === 'power_star') {
+                if (this.AABB(block)) block.trigger();
+            } else if (block.type === 'traitor_block') {
+                // TraitorBlockは通常ブロックと同様だが、fakeになったら無視
+                if (block.fake) continue;
+                const colDir = this.getCollisionDir(block);
+                const landDir = gravityDir === 1 ? 'b' : 't';
+                if (colDir === landDir) {
+                    this.y = landDir === 'b' ? block.y - this.h : block.y + block.h;
+                    this.vy = 0;
+                    this.grounded = true;
+                } else if (colDir === 'l') {
+                    this.x = block.x - this.w;
+                    this.vx = 0;
+                } else if (colDir === 'r') {
+                    this.x = block.x + block.w;
+                    this.vx = 0;
+                }
+            } else if (block.type === 'poison_spike') {
+                if (this.AABB(block)) block.trigger();
+            } else if (block.type === 'fake_system_message') {
                 if (this.AABB(block)) block.trigger();
             }
         }
@@ -1243,13 +1274,218 @@ class RunningGoal extends Goal {
     }
 }
 
+// --- Stage 6: System Malice - New Classes ---
+
+// 裏切りブロック（着地しようとすると逃げる）
+class TraitorBlock extends Block {
+    constructor(x, y, w, h, evadeDir = 1) {
+        super(x, y, w, h);
+        this.type = 'traitor_block';
+        this.originalX = x;
+        this.evadeDir = evadeDir; // 1: 右に逃げる, -1: 左に逃げる
+        this.evading = false;
+        this.evaded = false;
+        this.evadeSpeed = 12;
+        this.showBubble = false;
+        this.bubbleTimer = 0;
+    }
+    update() {
+        if (this.evaded) return;
+
+        // プレイヤーが上から接近しているか検出
+        if (!this.evading && player && !player.dead) {
+            const px = player.x + player.w / 2;
+            const py = player.y + player.h;
+            const bx = this.x + this.w / 2;
+            const by = this.y;
+
+            // 上から落下中で、ブロックの真上にいる場合
+            if (player.vy > 2 &&
+                py < by && py > by - 80 &&
+                px > this.x - 10 && px < this.x + this.w + 10) {
+                this.evading = true;
+                playSound('jump');
+            }
+        }
+
+        // 回避中の移動
+        if (this.evading && !this.evaded) {
+            this.x += this.evadeSpeed * this.evadeDir;
+            if (Math.abs(this.x - this.originalX) > 150) {
+                this.evaded = true;
+                this.showBubble = true;
+                this.fake = true; // 当たり判定を無効化
+            }
+        }
+
+        // 吹き出し表示タイマー
+        if (this.showBubble) {
+            this.bubbleTimer++;
+            if (this.bubbleTimer > 120) this.showBubble = false;
+        }
+    }
+    draw() {
+        if (this.evaded && !this.showBubble) return;
+
+        // ブロック本体
+        ctx.fillStyle = '#aaa';
+        ctx.fillRect(this.x, this.y, this.w, this.h);
+        ctx.strokeStyle = '#555';
+        ctx.strokeRect(this.x, this.y, this.w, this.h);
+
+        // 吹き出し
+        if (this.showBubble) {
+            ctx.fillStyle = '#fff';
+            ctx.beginPath();
+            ctx.ellipse(this.x + this.w / 2, this.y - 30, 50, 25, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#000';
+            ctx.stroke();
+
+            // 吹き出しの三角
+            ctx.fillStyle = '#fff';
+            ctx.beginPath();
+            ctx.moveTo(this.x + this.w / 2 - 10, this.y - 10);
+            ctx.lineTo(this.x + this.w / 2, this.y);
+            ctx.lineTo(this.x + this.w / 2 + 10, this.y - 10);
+            ctx.fill();
+
+            ctx.fillStyle = '#f00';
+            ctx.font = 'bold 16px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('残念ｗ', this.x + this.w / 2, this.y - 25);
+            ctx.textAlign = 'left';
+        }
+    }
+}
+
+// 遅効性の毒棘（触れてから5秒後に死亡）
+class PoisonSpike {
+    constructor(x, y, w, h) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.type = 'poison_spike';
+        this.triggered = false;
+    }
+    draw() {
+        // 紫色の毒々しい棘
+        ctx.fillStyle = this.triggered ? '#440044' : '#990099';
+        ctx.beginPath();
+        for (let i = 0; i < this.w; i += 10) {
+            ctx.moveTo(this.x + i, this.y + this.h);
+            ctx.lineTo(this.x + i + 5, this.y);
+            ctx.lineTo(this.x + i + 10, this.y + this.h);
+        }
+        ctx.fill();
+
+        // 毒エフェクト（泡）
+        if (!this.triggered && Math.random() > 0.9) {
+            ctx.fillStyle = 'rgba(200, 0, 200, 0.5)';
+            ctx.beginPath();
+            ctx.arc(this.x + Math.random() * this.w, this.y - 5, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+    trigger() {
+        if (this.triggered) return;
+        this.triggered = true;
+        poisonTimer = 300; // 5秒（60fps × 5）
+
+        // 毒を受けた音（不穏な音）
+        if (audioCtx) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(200, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(50, audioCtx.currentTime + 0.5);
+            gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.5);
+        }
+
+        // パーティクル
+        for (let i = 0; i < 10; i++) {
+            particles.push(new Particle(this.x + this.w / 2, this.y, '#990099'));
+        }
+    }
+}
+
+// 操作反転エリア（このゾーン内では左右が逆）
+class ReverseZone {
+    constructor(x, y, w, h) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.type = 'reverse_zone';
+    }
+    draw() {
+        // 薄紫の半透明エリア
+        ctx.fillStyle = 'rgba(128, 0, 128, 0.15)';
+        ctx.fillRect(this.x, this.y, this.w, this.h);
+
+        // 境界線
+        ctx.strokeStyle = 'rgba(128, 0, 128, 0.3)';
+        ctx.setLineDash([5, 5]);
+        ctx.strokeRect(this.x, this.y, this.w, this.h);
+        ctx.setLineDash([]);
+
+        // 反転マーク
+        ctx.fillStyle = 'rgba(128, 0, 128, 0.4)';
+        ctx.font = '20px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('⇄', this.x + this.w / 2, this.y + this.h / 2 + 7);
+        ctx.textAlign = 'left';
+    }
+    checkPlayer() {
+        if (!player) return false;
+        return player.x < this.x + this.w &&
+            player.x + player.w > this.x &&
+            player.y < this.y + this.h &&
+            player.y + player.h > this.y;
+    }
+}
+
+// 偽エラーメッセージ（画面がクラッシュしたように見せる）
+class FakeSystemMessage {
+    constructor(x, y, w, h, duration = 180) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.type = 'fake_system_message';
+        this.triggered = false;
+        this.duration = duration; // デフォルト3秒
+    }
+    draw() {
+        // トリガーゾーンは見えない
+    }
+    trigger() {
+        if (this.triggered) return;
+        this.triggered = true;
+        fakeErrorActive = true;
+        fakeErrorTimer = this.duration;
+
+        // エラー音
+        if (audioCtx) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.type = 'square';
+            osc.frequency.value = 100;
+            gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.3);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.3);
+        }
+    }
+}
+
 // --- Stage Unlock System ---
 let gameProgress = {
     1: { unlocked: true, cleared: false },
     2: { unlocked: true, cleared: false },
     3: { unlocked: true, cleared: false },
-    4: { unlocked: true, cleared: false }, // テスト用に開放
-    5: { unlocked: true, cleared: false } // 新しいステージ
+    4: { unlocked: true, cleared: false },
+    5: { unlocked: true, cleared: false },
+    6: { unlocked: true, cleared: false } // Stage 6: System Malice
 };
 const STORAGE_KEY_PROGRESS = 'unfair_progress_v4';
 
@@ -1261,6 +1497,7 @@ function loadStageUnlocks() {
         if (!gameProgress[3]) gameProgress[3] = { unlocked: false, cleared: false };
         if (!gameProgress[4]) gameProgress[4] = { unlocked: false, cleared: false };
         if (!gameProgress[5]) gameProgress[5] = { unlocked: false, cleared: false };
+        if (!gameProgress[6]) gameProgress[6] = { unlocked: false, cleared: false };
     }
 }
 
@@ -1309,7 +1546,15 @@ function initLevel() {
         initStage4();
     } else if (currentStage === 5) {
         initStage5();
+    } else if (currentStage === 6) {
+        initStage6();
     }
+
+    // Stage 6 グローバル変数リセット
+    poisonTimer = 0;
+    reverseControl = false;
+    fakeErrorActive = false;
+    fakeErrorTimer = 0;
 }
 
 // --- STAGE 1: The Original ---
@@ -1673,16 +1918,101 @@ function initStage5() {
     entities.push(new Block(4400, 0, 100, 600));
 }
 
+// --- STAGE 6: System Malice ---
+function initStage6() {
+    // 左端の壁
+    entities.push(new Block(0, 0, 20, 600));
+
+    // === PART 1: TraitorBlock チュートリアル ===
+    // スタート地点
+    entities.push(new Block(0, 500, 300, 100));
+
+    // 看板で安心させる
+    entities.push(new SignPost(150, 440, "Easy!", false));
+
+    // 穴と裏切りブロック
+    entities.push(new Trap(350, 580, 150, 20)); // 穴の下に棘
+    entities.push(new TraitorBlock(380, 480, 80, 20, 1)); // 右に逃げる
+
+    // 本当の足場（少し手前にある）
+    entities.push(new Block(300, 420, 50, 20));
+
+    // 第2の裏切りブロック
+    entities.push(new Block(550, 500, 100, 100));
+    entities.push(new Trap(700, 580, 150, 20));
+    entities.push(new TraitorBlock(720, 480, 80, 20, -1)); // 左に逃げる
+
+    // === PART 2: 遅効性の毒 ===
+    entities.push(new Block(900, 450, 150, 150));
+
+    // 紫色の毒棘（触れても死なない...ように見える）
+    entities.push(new PoisonSpike(1100, 560, 80, 20));
+    entities.push(new Block(1100, 500, 150, 60)); // 毒棘の上を歩ける足場
+
+    // 安全に見える長い通路（毒が効くまでの間）
+    entities.push(new Block(1300, 500, 800, 100));
+
+    // 偽の安心看板
+    entities.push(new SignPost(1400, 440, "Safe Zone", false));
+
+    // チェックポイント（本物）- 毒死後にここから再開
+    entities.push(new Checkpoint(1600, 460));
+
+    // === PART 3: 操作反転地獄 ===
+    // 狭い足場の連続
+    entities.push(new Block(2200, 450, 60, 20));
+    entities.push(new Block(2320, 400, 60, 20));
+    entities.push(new Block(2440, 350, 60, 20));
+    entities.push(new Block(2560, 300, 60, 20));
+    entities.push(new Block(2680, 250, 60, 20));
+
+    // 操作反転エリア（全体を覆う）
+    entities.push(new ReverseZone(2180, 150, 600, 400));
+
+    // 奈落
+    entities.push(new Trap(2150, 580, 700, 20));
+
+    // 着地地点
+    entities.push(new Block(2800, 350, 150, 20));
+
+    // チェックポイント2
+    entities.push(new Checkpoint(2850, 310));
+
+    // === PART 4: 偽エラー落ち ===
+    entities.push(new Block(3000, 400, 200, 200));
+
+    // ゴール直前の通路
+    entities.push(new Block(3250, 450, 400, 150));
+
+    // 偽エラートリガー（ゴール手前で発動）
+    entities.push(new FakeSystemMessage(3400, 350, 100, 200, 180)); // 3秒
+
+    // 偽エラー中に足場が消える演出（実際は最初からない）
+    // プレイヤーは操作不能中に足場の端に立っているので、復帰時に落ちやすい
+    entities.push(new Trap(3650, 580, 100, 20));
+
+    // ゴールエリア
+    entities.push(new Block(3750, 450, 200, 150));
+
+    // 本物のゴール
+    entities.push(new Goal(3850, 410, false));
+
+    // 全体の奈落棘
+    entities.push(new Trap(0, 580, 2100, 20));
+    entities.push(new Trap(2850, 580, 800, 20));
+}
+
 // --- Title Screen Logic ---
 let realStartBtn = { x: 780, y: 580, w: 20, h: 20 };
 let fakeStartBtn = { x: 300, y: 350, w: 200, h: 60 };
 
 // Stage Select Buttons
-let stageBtn1 = { x: 110, y: 280, w: 180, h: 80 };
-let stageBtn2 = { x: 310, y: 280, w: 180, h: 80 };
-let stageBtn3 = { x: 510, y: 280, w: 180, h: 80 };
-let stageBtn4 = { x: 210, y: 380, w: 180, h: 80 }; // Left shifted
-let stageBtn5 = { x: 410, y: 380, w: 180, h: 80 }; // New Stage
+let stageBtn1 = { x: 50, y: 250, w: 140, h: 70 };
+let stageBtn2 = { x: 210, y: 250, w: 140, h: 70 };
+let stageBtn3 = { x: 370, y: 250, w: 140, h: 70 };
+let stageBtn4 = { x: 530, y: 250, w: 140, h: 70 };
+let stageBtn5 = { x: 130, y: 340, w: 140, h: 70 };
+let stageBtn6 = { x: 290, y: 340, w: 140, h: 70 }; // Stage 6: System Malice
 
 function checkTitleInteraction(clickX, clickY) {
     let cx = mouse.x;
@@ -1756,6 +2086,14 @@ function checkTitleInteraction(clickX, clickY) {
                 initLevel();
                 startBGM();
             }
+            // Stage 6
+            if (cx > stageBtn6.x && cx < stageBtn6.x + stageBtn6.w &&
+                cy > stageBtn6.y && cy < stageBtn6.y + stageBtn6.h && gameProgress[6].unlocked) {
+                currentStage = 6;
+                currentState = STATES.PLAYING;
+                initLevel();
+                startBGM();
+            }
         }
     }
 }
@@ -1787,8 +2125,35 @@ function update() {
     if (shakeIntensity < 0.5) shakeIntensity = 0;
 
     if (currentState === STATES.PLAYING) {
-        player.update();
+        // Stage 6: 偶エラー中は操作不能
+        if (!fakeErrorActive) {
+            player.update();
+        }
         entities.forEach(e => { if (e.update) e.update(); });
+
+        // Stage 6: ReverseZoneチェック
+        reverseControl = false;
+        entities.forEach(e => {
+            if (e.type === 'reverse_zone' && e.checkPlayer && e.checkPlayer()) {
+                reverseControl = true;
+            }
+        });
+
+        // Stage 6: 毒タイマー
+        if (poisonTimer > 0) {
+            poisonTimer--;
+            if (poisonTimer === 0 && player && !player.dead) {
+                player.die("遅効性の毒");
+            }
+        }
+
+        // Stage 6: 偶エラータイマー
+        if (fakeErrorActive) {
+            fakeErrorTimer--;
+            if (fakeErrorTimer <= 0) {
+                fakeErrorActive = false;
+            }
+        }
 
         // Camera Follow
         if (currentStage === 4) {
@@ -1899,6 +2264,7 @@ function draw() {
         drawStageBtn(stageBtn3, 3, "Chaos Mode", "???");
         drawStageBtn(stageBtn4, 4, "Catarsis", "Destruction");
         drawStageBtn(stageBtn5, 5, "The Prank", "Safety First");
+        drawStageBtn(stageBtn6, 6, "System Malice", "Trust No One");
 
     } else {
         ctx.save();
@@ -1923,11 +2289,67 @@ function draw() {
             ctx.fillStyle = 'black';
             ctx.fillRect(player.x + 4, player.y + 4, 4, 4);
             ctx.fillRect(player.x + 12, player.y + 4, 4, 4);
+
+            // Stage 6: 毒状態エフェクト
+            if (poisonTimer > 0) {
+                ctx.fillStyle = `rgba(153, 0, 153, ${0.3 + Math.sin(frameCount * 0.2) * 0.2})`;
+                ctx.fillRect(player.x, player.y, player.w, player.h);
+
+                // 毒カウントダウン表示（残り秒数）
+                if (poisonTimer < 180) { // 最後の3秒は表示
+                    ctx.fillStyle = '#ff00ff';
+                    ctx.font = 'bold 12px monospace';
+                    ctx.fillText(Math.ceil(poisonTimer / 60), player.x + 6, player.y - 5);
+                }
+            }
         }
 
         particles.forEach(p => p.draw());
 
         ctx.restore();
+
+        // Stage 6: 偽エラー画面
+        if (fakeErrorActive) {
+            ctx.fillStyle = '#000011';
+            ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+            ctx.fillStyle = '#fff';
+            ctx.font = '14px Courier New';
+            ctx.textAlign = 'left';
+
+            const errorLines = [
+                "Uncaught TypeError: Cannot read property 'x' of undefined",
+                "    at Player.update (game.js:316)",
+                "    at update (game.js:2112)",
+                "    at gameLoop (game.js:2340)",
+                "",
+                "Error: FATAL_EXCEPTION_GAME_CRASH",
+                "    at checkCollisions (game.js:383)",
+                "    at Player.update (game.js:380)",
+                "",
+                "WARNING: Memory leak detected",
+                "WARNING: GPU process crashed",
+                "",
+                "[" + new Date().toISOString() + "] Game terminated unexpectedly",
+                "",
+                "Press F5 to reload..."
+            ];
+
+            let y = 50;
+            errorLines.forEach((line, i) => {
+                // ランダムなグリッチ効果
+                const glitchOffset = Math.random() > 0.9 ? (Math.random() - 0.5) * 10 : 0;
+                ctx.fillStyle = line.startsWith("WARNING") ? '#ff0' :
+                    line.startsWith("Error") ? '#f00' : '#fff';
+                ctx.fillText(line, 20 + glitchOffset, y + i * 20);
+            });
+
+            // ブリンクするカーソル
+            if (Math.floor(frameCount / 30) % 2 === 0) {
+                ctx.fillStyle = '#0f0';
+                ctx.fillRect(20, y + errorLines.length * 20, 10, 15);
+            }
+        }
 
         // UI Layer
         if (currentState === STATES.GAMEOVER) {
