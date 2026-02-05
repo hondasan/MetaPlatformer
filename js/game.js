@@ -510,6 +510,10 @@ class Player {
                         this.wallDir = -1;
                     }
                 }
+            } else if (block.type === 'mimic_coin') {
+                if (this.AABB(block)) this.die("強欲");
+            } else if (block.type === 'running_goal') {
+                if (this.AABB(block)) block.trigger(this);
             } else if (block.type === 'power_star') {
                 if (this.AABB(block)) block.trigger();
             }
@@ -1197,13 +1201,55 @@ class LaserTrap {
     }
 }
 
+// 偽コイン
+class MimicCoin {
+    constructor(x, y) {
+        this.x = x; this.y = y; this.w = 30; this.h = 30;
+        this.type = 'mimic_coin';
+    }
+    draw() {
+        ctx.fillStyle = 'gold';
+        ctx.beginPath();
+        ctx.arc(this.x + 15, this.y + 15, 15, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#000';
+        ctx.font = '20px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('$', this.x + 15, this.y + 15);
+    }
+}
+
+// 逃げるゴール
+class RunningGoal extends Goal {
+    constructor(x, y) {
+        super(x, y, true);
+        this.type = 'running_goal';
+        this.speed = 4;
+        this.run = false;
+        this.w = 50; this.h = 80; // ゴールサイズ
+    }
+    update() {
+        if (!player) return;
+        if (!this.run && Math.abs(player.x - this.x) < 200) {
+            this.run = true;
+            // 挑発メッセージ
+            lastMockery = "待て〜！";
+            shakeIntensity = 5;
+        }
+        if (this.run && this.x < 4200) {
+            this.x += this.speed;
+        }
+    }
+}
+
 // --- Stage Unlock System ---
 let gameProgress = {
     1: { unlocked: true, cleared: false },
     2: { unlocked: true, cleared: false },
     3: { unlocked: true, cleared: false },
     4: { unlocked: true, cleared: false }, // テスト用に開放
-    5: { unlocked: false, cleared: false } // 新しいステージ
+    5: { unlocked: true, cleared: false } // 新しいステージ
 };
 const STORAGE_KEY_PROGRESS = 'unfair_progress_v4';
 
@@ -1261,6 +1307,8 @@ function initLevel() {
         initStage3();
     } else if (currentStage === 4) {
         initStage4();
+    } else if (currentStage === 5) {
+        initStage5();
     }
 }
 
@@ -1575,6 +1623,56 @@ function initStage4() {
     entities.push(new Trap(0, 580, 4000, 20));
 }
 
+// --- STAGE 5: The Prank ---
+function initStage5() {
+    // 1. 安全第一？
+    entities.push(new Block(0, 500, 300, 100)); // Start
+
+    // SAFE ZONE
+    entities.push(new Block(400, 500, 200, 100));
+    let safeSign = new Block(450, 450, 100, 50, true); // ヒントブロック
+    safeSign.draw = function () {
+        ctx.fillStyle = '#fff';
+        ctx.font = '20px sans-serif';
+        ctx.fillText("SAFE ZONE", this.x, this.y + 30);
+    };
+    entities.push(safeSign);
+
+    // 上から落ちてくる罠
+    let heavyWeight = new FallingBlock(400, -200, 200, 100, "100t");
+    heavyWeight.id = 'safeTrap';
+    entities.push(heavyWeight);
+    entities.push(new TriggerZone(420, 450, 160, 50, 'safeTrap'));
+
+    // 2. コイン畑
+    entities.push(new Block(800, 500, 600, 100));
+    for (let i = 0; i < 5; i++) {
+        entities.push(new MimicCoin(850 + i * 100, 450));
+    }
+    // 看板「MONEY!!」
+    entities.push(new SignPost(700, 460, "MONEY!!"));
+
+    // 3. 逃げるゴール
+    entities.push(new Block(1600, 500, 3000, 100)); // 長い滑走路
+    entities.push(new RunningGoal(2000, 420));
+
+    // 追いかけている最中の罠
+    // 上から大量のブロック
+    for (let i = 0; i < 10; i++) {
+        let rock = new FallingBlock(2500 + i * 150, -100 - Math.random() * 200, 60, 60, "岩");
+        rock.id = `rock${i}`;
+        entities.push(rock);
+        entities.push(new TriggerZone(2400 + i * 150, 400, 50, 200, `rock${i}`));
+    }
+
+    // 最終ゴール
+    entities.push(new Goal(4300, 460, false)); // 壁際で止まるのでその先に本当のゴール？いや、逃げたゴールが止まるだけでいいか。
+    // RunningGoalが止まったところをゴールとするなら、RunningGoal自体がトリガーを持っているので、
+    // 別のGoalを置く必要はないが、RunningGoalが壁の中に入って取れなくなる可能性も。
+    // 壁を用意
+    entities.push(new Block(4400, 0, 100, 600));
+}
+
 // --- Title Screen Logic ---
 let realStartBtn = { x: 780, y: 580, w: 20, h: 20 };
 let fakeStartBtn = { x: 300, y: 350, w: 200, h: 60 };
@@ -1583,7 +1681,8 @@ let fakeStartBtn = { x: 300, y: 350, w: 200, h: 60 };
 let stageBtn1 = { x: 110, y: 280, w: 180, h: 80 };
 let stageBtn2 = { x: 310, y: 280, w: 180, h: 80 };
 let stageBtn3 = { x: 510, y: 280, w: 180, h: 80 };
-let stageBtn4 = { x: 310, y: 380, w: 180, h: 80 }; // 2段目真ん中
+let stageBtn4 = { x: 210, y: 380, w: 180, h: 80 }; // Left shifted
+let stageBtn5 = { x: 410, y: 380, w: 180, h: 80 }; // New Stage
 
 function checkTitleInteraction(clickX, clickY) {
     let cx = mouse.x;
@@ -1645,6 +1744,14 @@ function checkTitleInteraction(clickX, clickY) {
             if (cx > stageBtn4.x && cx < stageBtn4.x + stageBtn4.w &&
                 cy > stageBtn4.y && cy < stageBtn4.y + stageBtn4.h && gameProgress[4].unlocked) {
                 currentStage = 4;
+                currentState = STATES.PLAYING;
+                initLevel();
+                startBGM();
+            }
+            // Stage 5
+            if (cx > stageBtn5.x && cx < stageBtn5.x + stageBtn5.w &&
+                cy > stageBtn5.y && cy < stageBtn5.y + stageBtn5.h && gameProgress[5].unlocked) {
+                currentStage = 5;
                 currentState = STATES.PLAYING;
                 initLevel();
                 startBGM();
@@ -1791,6 +1898,7 @@ function draw() {
         drawStageBtn(stageBtn2, 2, "Betrayal", "Trust Issues");
         drawStageBtn(stageBtn3, 3, "Chaos Mode", "???");
         drawStageBtn(stageBtn4, 4, "Catarsis", "Destruction");
+        drawStageBtn(stageBtn5, 5, "The Prank", "Safety First");
 
     } else {
         ctx.save();
