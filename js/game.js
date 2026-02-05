@@ -18,7 +18,7 @@ const WALL_JUMP_FORCE_Y = 11;
 const MAX_SPEED = 7;
 
 // Storage Keys
-const STORAGE_KEY_DEATHS = 'unfair_death_history_v3'; 
+const STORAGE_KEY_DEATHS = 'unfair_death_history_v3';
 const STORAGE_KEY_COUNT = 'unfair_death_count_v3';
 
 // Audio Context
@@ -26,8 +26,12 @@ let audioCtx = null;
 let bgmInterval = null;
 
 // Game State
-const STATES = { TITLE: 0, PLAYING: 1, GAMEOVER: 2, WIN: 3 };
+const STATES = { TITLE: 0, STAGE_SELECT: 1, PLAYING: 2, GAMEOVER: 3, WIN: 4 };
 let currentState = STATES.TITLE;
+let currentStage = 1;
+
+// Stage unlock storage
+const STORAGE_KEY_STAGES = 'unfair_stages_v3';
 let frameCount = 0;
 let shakeIntensity = 0;
 let glitchIntensity = 0;
@@ -102,7 +106,7 @@ function playSound(type) {
 
         osc.start(now);
         osc.stop(now + 0.3);
-    } else if (type === 'buzzer') { 
+    } else if (type === 'buzzer') {
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(50, now);
         osc.frequency.linearRampToValueAtTime(30, now + 0.5);
@@ -139,31 +143,31 @@ function playSound(type) {
 
 function startBGM() {
     let noteIndex = 0;
-    const notes = [110, 103, 97, 103]; 
-    
+    const notes = [110, 103, 97, 103];
+
     if (bgmInterval) clearInterval(bgmInterval);
 
     bgmInterval = setInterval(() => {
         if (!audioCtx || currentState !== STATES.PLAYING) return;
-        
+
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
         osc.connect(gain);
         gain.connect(audioCtx.destination);
-        
+
         // Progress increases pitch/speed tension (Meta audio)
-        const progressFactor = Math.max(0, (player.x / 3000)); 
+        const progressFactor = Math.max(0, (player.x / 3000));
         const pitchMod = 1 + (progressFactor * 0.5);
-        
+
         osc.type = 'triangle';
         osc.frequency.value = notes[noteIndex] * pitchMod;
-        
+
         gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
-        
+
         osc.start();
         osc.stop(audioCtx.currentTime + 0.4);
-        
+
         noteIndex = (noteIndex + 1) % notes.length;
     }, 400);
 }
@@ -181,9 +185,9 @@ function loadPersistence() {
 
 function saveDeath(x, y) {
     deathCount++;
-    deathHistory.push({x: Math.round(x), y: Math.round(y)});
+    deathHistory.push({ x: Math.round(x), y: Math.round(y) });
     if (deathHistory.length > 200) deathHistory.shift();
-    
+
     localStorage.setItem(STORAGE_KEY_DEATHS, JSON.stringify(deathHistory));
     localStorage.setItem(STORAGE_KEY_COUNT, deathCount);
 }
@@ -209,9 +213,9 @@ const touchInput = { left: false, right: false, jump: false, activeTouches: [] }
 const mouse = { x: 0, y: 0, clicked: false };
 
 // Touch Controls (Mobile)
-canvas.addEventListener('touchstart', handleTouch, {passive: false});
-canvas.addEventListener('touchmove', handleTouch, {passive: false});
-canvas.addEventListener('touchend', handleTouch, {passive: false});
+canvas.addEventListener('touchstart', handleTouch, { passive: false });
+canvas.addEventListener('touchmove', handleTouch, { passive: false });
+canvas.addEventListener('touchend', handleTouch, { passive: false });
 
 function handleTouch(e) {
     e.preventDefault();
@@ -233,7 +237,7 @@ function handleTouch(e) {
         const tx = (t.clientX - rect.left) * scaleX;
         const ty = (t.clientY - rect.top) * scaleY;
 
-        touchInput.activeTouches.push({x: tx, y: ty});
+        touchInput.activeTouches.push({ x: tx, y: ty });
 
         // Improved Virtual Controls: Split screen approach
         // Left 45% = Move (Left half = Left, Right half = Right)
@@ -258,7 +262,7 @@ window.addEventListener('keydown', (e) => {
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
         e.preventDefault();
     }
-    if (currentState === STATES.GAMEOVER && e.code === 'Space') resetGame();
+    if ((currentState === STATES.GAMEOVER || currentState === STATES.WIN) && e.code === 'Space') resetGame();
 });
 
 window.addEventListener('keyup', (e) => keys[e.code] = false);
@@ -274,7 +278,7 @@ canvas.addEventListener('mousemove', (e) => {
 canvas.addEventListener('mousedown', () => {
     mouse.clicked = true;
     initAudio();
-    checkTitleInteraction(mouse.x * (canvas.offsetWidth/CANVAS_WIDTH), mouse.y * (canvas.offsetHeight/CANVAS_HEIGHT)); 
+    checkTitleInteraction(mouse.x * (canvas.offsetWidth / CANVAS_WIDTH), mouse.y * (canvas.offsetHeight / CANVAS_HEIGHT));
 });
 canvas.addEventListener('mouseup', () => mouse.clicked = false);
 
@@ -343,7 +347,7 @@ class Player {
         this.y += this.vy;
 
         this.checkCollisions();
-        
+
         // Bounds
         if (this.y > CANVAS_HEIGHT + 200) this.die("落下");
     }
@@ -358,9 +362,9 @@ class Player {
             if (['block', 'ui_block', 'moving_block', 'invisible_block'].includes(block.type)) {
                 if (block.fake) continue;
                 // Invisible block logic: solid only if near or falling onto it? No, always solid but invisible.
-                
+
                 const colDir = this.getCollisionDir(block);
-                
+
                 if (colDir === 'b') {
                     this.y = block.y - this.h;
                     this.vy = 0;
@@ -375,7 +379,7 @@ class Player {
                 } else if (colDir === 't') {
                     this.y = block.y + block.h;
                     this.vy = 0;
-                    if (block.falling || block.type === 'moving_block') this.die("圧死"); 
+                    if (block.falling || block.type === 'moving_block') this.die("圧死");
                 } else if (colDir === 'l') {
                     this.x = block.x - this.w;
                     this.vx = 0;
@@ -401,6 +405,35 @@ class Player {
                 if (this.AABB(block)) block.trigger(this);
             } else if (block.type === 'checkpoint') {
                 if (this.AABB(block)) block.trigger(this);
+            } else if (block.type === 'launchpad') {
+                // 吹っ飛ばし床
+                const colDir = this.getCollisionDir(block);
+                if (colDir === 'b') {
+                    this.y = block.y - this.h;
+                    block.trigger(this);
+                }
+            } else if (block.type === 'fake_spike') {
+                if (this.AABB(block)) block.trigger(this);
+            } else if (block.type === 'accel_zone') {
+                if (this.AABB(block)) block.applyForce(this);
+            } else if (block.type === 'trust_block') {
+                if (block.destroyed) continue;
+                const colDir = this.getCollisionDir(block);
+                if (colDir === 'b') {
+                    this.y = block.y - this.h;
+                    this.vy = 0;
+                    this.grounded = true;
+                    block.trigger();
+                } else if (colDir === 't') {
+                    this.y = block.y + block.h;
+                    this.vy = 0;
+                } else if (colDir === 'l') {
+                    this.x = block.x - this.w;
+                    this.vx = 0;
+                } else if (colDir === 'r') {
+                    this.x = block.x + block.w;
+                    this.vx = 0;
+                }
             }
         }
     }
@@ -427,9 +460,9 @@ class Player {
 
     AABB(other) {
         return this.x < other.x + other.w &&
-               this.x + this.w > other.x &&
-               this.y < other.y + other.h &&
-               this.y + this.h > other.y;
+            this.x + this.w > other.x &&
+            this.y < other.y + other.h &&
+            this.y + this.h > other.y;
     }
 
     die(reason) {
@@ -439,11 +472,11 @@ class Player {
         shakeIntensity = 20;
         glitchIntensity = 10;
         playSound('die');
-        
+
         lastMockery = MOCKERY[Math.floor(Math.random() * MOCKERY.length)] + `\n(死因: ${reason})`;
-        
-        for(let i=0; i<20; i++) {
-            particles.push(new Particle(this.x + this.w/2, this.y + this.h/2, '#ff0000'));
+
+        for (let i = 0; i < 20; i++) {
+            particles.push(new Particle(this.x + this.w / 2, this.y + this.h / 2, '#ff0000'));
         }
 
         currentState = STATES.GAMEOVER;
@@ -455,8 +488,8 @@ class Block {
         this.x = x; this.y = y; this.w = w; this.h = h;
         this.type = 'block';
         this.fake = fake;
-        this.color = '#aaa'; 
-        if (fake) this.color = '#a0a0a0'; 
+        this.color = '#aaa';
+        if (fake) this.color = '#a0a0a0';
     }
     draw() {
         ctx.fillStyle = this.color;
@@ -544,7 +577,7 @@ class Trap {
     draw() {
         ctx.fillStyle = '#ff3333';
         ctx.beginPath();
-        for(let i=0; i<this.w; i+=10) {
+        for (let i = 0; i < this.w; i += 10) {
             ctx.moveTo(this.x + i, this.y + this.h);
             ctx.lineTo(this.x + i + 5, this.y);
             ctx.lineTo(this.x + i + 10, this.y + this.h);
@@ -562,7 +595,7 @@ class FallingBlock extends Block {
         this.vy = 0;
         this.landed = false;
     }
-    
+
     update() {
         if (this.falling) {
             this.vy += GRAVITY * 1.5;
@@ -593,7 +626,7 @@ class TriggerZone {
         this.targetId = targetId;
         this.active = true;
     }
-    draw() {}
+    draw() { }
     activate() {
         if (!this.active) return;
         this.active = false;
@@ -612,12 +645,12 @@ class FakeSave {
         this.triggered = false;
     }
     draw() {
-        if(!this.triggered) {
+        if (!this.triggered) {
             ctx.fillStyle = '#44ff44';
             ctx.fillRect(this.x, this.y, this.w, this.h);
             ctx.fillStyle = '#000';
             ctx.font = '10px monospace';
-            ctx.fillText("SAVE", this.x+8, this.y+24);
+            ctx.fillText("SAVE", this.x + 8, this.y + 24);
         }
     }
     trigger(p) {
@@ -641,15 +674,15 @@ class Checkpoint {
         ctx.fillRect(this.x, this.y, this.w, this.h);
         ctx.fillStyle = '#fff';
         ctx.font = '10px monospace';
-        ctx.fillText("CHK", this.x+10, this.y+24);
+        ctx.fillText("CHK", this.x + 10, this.y + 24);
     }
     trigger(p) {
         if (!this.active) {
             this.active = true;
-            spawnPoint = {x: this.x, y: this.y};
+            spawnPoint = { x: this.x, y: this.y };
             playSound('checkpoint');
             // Heal message?
-            for(let i=0; i<10; i++) particles.push(new Particle(this.x+20, this.y, '#00ccff'));
+            for (let i = 0; i < 10; i++) particles.push(new Particle(this.x + 20, this.y, '#00ccff'));
         }
     }
 }
@@ -667,8 +700,8 @@ class Goal {
             ctx.fillRect(this.x, this.y, this.w, this.h);
             ctx.fillStyle = 'white';
             ctx.beginPath();
-            ctx.arc(this.x + 10, this.y + 10, 5, 0, Math.PI*2);
-            ctx.arc(this.x + 20, this.y + 10, 5, 0, Math.PI*2);
+            ctx.arc(this.x + 10, this.y + 10, 5, 0, Math.PI * 2);
+            ctx.arc(this.x + 20, this.y + 10, 5, 0, Math.PI * 2);
             ctx.fill();
             ctx.fillStyle = 'red';
             ctx.fillRect(this.x + 5, this.y + 25, 20, 5);
@@ -718,6 +751,177 @@ class Particle {
     }
 }
 
+// --- Stage 2 New Entities ---
+
+// 吹っ飛ばし床
+class LaunchPad {
+    constructor(x, y, w, h, forceX, forceY, looksSafe = true) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.forceX = forceX;
+        this.forceY = forceY;
+        this.looksSafe = looksSafe; // true = 安全に見える, false = 危険に見える
+        this.type = 'launchpad';
+        this.activated = false;
+        this.cooldown = 0;
+    }
+    update() {
+        if (this.cooldown > 0) this.cooldown--;
+    }
+    draw() {
+        if (this.looksSafe) {
+            // 普通のブロックに見せかける
+            ctx.fillStyle = '#aaa';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+            ctx.strokeStyle = '#555';
+            ctx.strokeRect(this.x, this.y, this.w, this.h);
+        } else {
+            // 危険そうに見えるが実は安全なルートへ飛ばす
+            ctx.fillStyle = '#ff6600';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+            ctx.fillStyle = '#ffcc00';
+            ctx.font = '12px monospace';
+            ctx.fillText('⚡', this.x + this.w / 2 - 6, this.y + this.h / 2 + 4);
+        }
+    }
+    trigger(p) {
+        if (this.cooldown > 0) return;
+        p.vx = this.forceX;
+        p.vy = this.forceY;
+        this.cooldown = 30;
+        playSound('jump');
+        for (let i = 0; i < 10; i++) {
+            particles.push(new Particle(p.x + p.w / 2, p.y + p.h, '#ffcc00'));
+        }
+    }
+}
+
+// 偽の棘（見た目は危険、実は安全）
+class FakeSpike {
+    constructor(x, y, w, h) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.type = 'fake_spike';
+        this.revealed = false;
+    }
+    draw() {
+        if (this.revealed) {
+            // 通過したら「？」マークで嘲笑
+            ctx.fillStyle = 'rgba(100, 255, 100, 0.3)';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+            ctx.fillStyle = '#0f0';
+            ctx.font = '16px monospace';
+            ctx.fillText('?', this.x + this.w / 2 - 4, this.y + this.h / 2 + 5);
+        } else {
+            // 本物の棘に見せる
+            ctx.fillStyle = '#ff3333';
+            ctx.beginPath();
+            for (let i = 0; i < this.w; i += 10) {
+                ctx.moveTo(this.x + i, this.y + this.h);
+                ctx.lineTo(this.x + i + 5, this.y);
+                ctx.lineTo(this.x + i + 10, this.y + this.h);
+            }
+            ctx.fill();
+        }
+    }
+    trigger(p) {
+        this.revealed = true;
+        // 安全！何も起こらない
+    }
+}
+
+// 強制加速エリア
+class AccelZone {
+    constructor(x, y, w, h, accelX, visible = false) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.accelX = accelX;
+        this.type = 'accel_zone';
+        this.visible = visible;
+    }
+    draw() {
+        if (this.visible) {
+            ctx.fillStyle = 'rgba(0, 200, 255, 0.2)';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+            // 矢印表示
+            ctx.fillStyle = 'rgba(0, 200, 255, 0.5)';
+            const dir = this.accelX > 0 ? '→' : '←';
+            ctx.font = '20px monospace';
+            for (let i = 0; i < this.w; i += 40) {
+                ctx.fillText(dir, this.x + i + 10, this.y + this.h / 2 + 7);
+            }
+        }
+    }
+    applyForce(p) {
+        p.vx += this.accelX * 0.1;
+    }
+}
+
+// 嘘つき看板
+class SignPost {
+    constructor(x, y, text, isLie = true) {
+        this.x = x; this.y = y; this.w = 80; this.h = 60;
+        this.text = text;
+        this.isLie = isLie;
+        this.type = 'signpost';
+    }
+    draw() {
+        // 看板の柱
+        ctx.fillStyle = '#8B4513';
+        ctx.fillRect(this.x + 35, this.y + 40, 10, 30);
+        // 看板本体
+        ctx.fillStyle = '#DEB887';
+        ctx.fillRect(this.x, this.y, this.w, 40);
+        ctx.strokeStyle = '#8B4513';
+        ctx.strokeRect(this.x, this.y, this.w, 40);
+        // テキスト
+        ctx.fillStyle = this.isLie ? '#333' : '#060';
+        ctx.font = '12px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(this.text, this.x + this.w / 2, this.y + 25);
+        ctx.textAlign = 'left';
+    }
+}
+
+// 信頼裏切りブロック（N回目で消える）
+class TrustBlock extends Block {
+    constructor(x, y, w, h, triggerCount) {
+        super(x, y, w, h);
+        this.type = 'trust_block';
+        this.triggerCount = triggerCount; // この回数目で消える
+        this.currentCount = 0;
+        this.destroyed = false;
+    }
+    draw() {
+        if (this.destroyed) return;
+        ctx.fillStyle = '#88aa88';
+        ctx.fillRect(this.x, this.y, this.w, this.h);
+        ctx.strokeStyle = '#446644';
+        ctx.strokeRect(this.x, this.y, this.w, this.h);
+    }
+    trigger() {
+        this.currentCount++;
+        if (this.currentCount >= this.triggerCount) {
+            this.destroyed = true;
+            this.fake = true; // 当たり判定を無効化
+            playSound('buzzer');
+            for (let i = 0; i < 15; i++) {
+                particles.push(new Particle(this.x + this.w / 2, this.y + this.h / 2, '#88aa88'));
+            }
+        }
+    }
+}
+
+// --- Stage Unlock System ---
+let stageUnlocks = { 1: true, 2: true }; // デフォルトで両方遊べる
+
+function loadStageUnlocks() {
+    const data = localStorage.getItem(STORAGE_KEY_STAGES);
+    if (data) stageUnlocks = JSON.parse(data);
+}
+
+function saveStageUnlock(stage) {
+    stageUnlocks[stage] = true;
+    localStorage.setItem(STORAGE_KEY_STAGES, JSON.stringify(stageUnlocks));
+}
+
 // --- Globals ---
 let player;
 let entities = [];
@@ -727,23 +931,34 @@ let titleTrapped = false;
 // --- Level Generation ---
 function initLevel() {
     // If resetting from gameover, keep spawn point if valid
-    if (currentState === STATES.TITLE) spawnPoint = {x: 50, y: 400};
-    
+    if (currentState === STATES.TITLE || currentState === STATES.STAGE_SELECT) {
+        spawnPoint = { x: 50, y: 400 };
+    }
+
     player = new Player();
     entities = [];
     particles = [];
     cameraX = 0;
-    
+
+    if (currentStage === 1) {
+        initStage1();
+    } else if (currentStage === 2) {
+        initStage2();
+    }
+}
+
+// --- STAGE 1: The Original ---
+function initStage1() {
     // --- PART 1: The Basics ---
     entities.push(new Block(0, 500, 200, 100));
     // Pit hint
     entities.push(new Block(200, 500, 150, 100, true));
     entities.push(new Block(350, 500, 450, 100));
-    entities.push(new Block(0, 0, 20, 600)); 
+    entities.push(new Block(0, 0, 20, 600));
 
     entities.push(new Block(200, 350, 100, 20));
     entities.push(new Block(400, 250, 100, 20));
-    
+
     // Trap 1: Falling Sign
     let tutorialSign = new FallingBlock(360, -100, 120, 40, "Tutorial");
     tutorialSign.id = 'tutSign';
@@ -758,7 +973,7 @@ function initLevel() {
 
     // --- PART 2: Extension with Enemies ---
     entities.push(new Block(800, 400, 100, 20));
-    
+
     // New Gimmick: Invisible Bridge
     // 950 - 1200 is empty, but has invisible blocks
     entities.push(new InvisibleBlock(950, 400, 50, 20));
@@ -776,10 +991,10 @@ function initLevel() {
     // REAL Checkpoint (Looks suspicious, black/grey)
     // Placed after the fake one
     entities.push(new Checkpoint(1550, 360));
-    
+
     // --- PART 3: The Hard Part ---
     entities.push(new Block(1700, 300, 50, 20));
-    
+
     // Moving platforms over spikes
     entities.push(new Trap(1700, 580, 1000, 20));
     entities.push(new MovingBlock(1800, 300, 80, 20, 150, 3));
@@ -799,7 +1014,7 @@ function initLevel() {
     // Invisible stairs to real goal
     entities.push(new InvisibleBlock(3000, 300, 50, 20));
     entities.push(new InvisibleBlock(3100, 200, 50, 20));
-    
+
     // Real Goal
     entities.push(new Block(3200, 150, 100, 20));
     entities.push(new Goal(3250, 110, false));
@@ -808,34 +1023,154 @@ function initLevel() {
     entities.push(new Trap(200, 580, 150, 20));
 }
 
+// --- STAGE 2: 裏切りと信頼 ---
+function initStage2() {
+    // 左端の壁
+    entities.push(new Block(0, 0, 20, 600));
+
+    // === PART 1: 嘘つきゾーン ===
+    // スタート地点
+    entities.push(new Block(0, 500, 250, 100));
+
+    // 嘘つき看板その1: 「→安全」と書いてあるが右は罠
+    entities.push(new SignPost(150, 440, "→安全", true));
+
+    // 右に行くと落とし穴（看板の嘘）
+    entities.push(new Block(250, 500, 50, 100, true)); // 偽の床
+    entities.push(new Trap(250, 580, 100, 20));
+
+    // 本当の正解は上に登る
+    entities.push(new Block(100, 380, 80, 20));
+    entities.push(new Block(200, 300, 80, 20));
+
+    // 偽の棘エリア（見た目は危険だが実は安全）
+    entities.push(new FakeSpike(350, 560, 100, 20));
+    entities.push(new Block(350, 500, 150, 60)); // 偽棘の下の足場
+
+    // === PART 2: 吹っ飛ばしゾーン ===
+    entities.push(new Block(500, 400, 100, 20));
+
+    // 安全そうに見える床が実は吹っ飛ばし床（落とし穴へ）
+    entities.push(new LaunchPad(650, 400, 80, 20, 15, -5, true)); // 見た目普通、右に吹っ飛ぶ→穴へ
+    entities.push(new Trap(800, 580, 150, 20)); // 吹っ飛び先の穴
+
+    // 危険そうに見える床が実は正解ルートへ
+    entities.push(new LaunchPad(700, 300, 80, 20, -8, -15, false)); // 見た目危険、左上に吹っ飛ぶ→安全
+    entities.push(new Block(550, 150, 100, 20)); // 正解の着地点
+
+    // === PART 3: 信頼裏切りゾーン ===
+    // 3回乗っても大丈夫、4回目で消えるブロック
+    entities.push(new TrustBlock(700, 150, 80, 20, 4));
+    entities.push(new Block(850, 150, 100, 20));
+
+    // チェックポイント（本物）
+    entities.push(new Checkpoint(880, 110));
+
+    // === PART 4: 加速トラップゾーン ===
+    entities.push(new Block(1000, 300, 300, 20));
+
+    // 見えない加速エリア→強制的に穴に落とされる
+    entities.push(new AccelZone(1050, 200, 150, 100, 3, false)); // 見えない右加速
+    entities.push(new Trap(1350, 580, 100, 20));
+
+    // 看板で警告...だが嘘
+    entities.push(new SignPost(1000, 240, "←危険", true)); // 左が危険と言うが、左が正解
+
+    // 正解は左側を通る
+    entities.push(new Block(950, 200, 50, 20));
+    entities.push(new Block(900, 100, 80, 20));
+
+    // === PART 5: 最終エリア ===
+    entities.push(new Block(1000, 50, 200, 20));
+
+    // 偽のチェックポイント（今回はステージ1で学んだはず...）
+    // でも今回は偽が偽に見えて本物に見えるやつ
+    entities.push(new FakeSave(1050, 10)); // ステージ1で学んだので避けるはず
+
+    // 避けた先に本当の罠
+    entities.push(new Block(1200, 100, 200, 20));
+    // プレイヤーが偽セーブを避けて右に行くと...
+    entities.push(new Trap(1200, 80, 50, 20)); // 棘
+
+    // 実は偽セーブの上を通らないといけない
+    entities.push(new InvisibleBlock(1100, -20, 80, 20)); // 偽セーブの真上に透明足場
+
+    // ゴールへの道
+    entities.push(new Block(1250, -50, 100, 20));
+    entities.push(new MovingBlock(1400, 50, 80, 20, 100, 2));
+
+    // 偽ゴール（これはさすがに見破れるはず）
+    entities.push(new Block(1550, 100, 80, 20));
+    entities.push(new Goal(1570, 60, true));
+
+    // 本物のゴールは下にある
+    entities.push(new Block(1600, 300, 100, 20));
+    entities.push(new Goal(1630, 260, false));
+
+    // ゴールへの足場
+    entities.push(new InvisibleBlock(1500, 200, 60, 20));
+    entities.push(new Block(1550, 350, 50, 20));
+
+    // 奈落の棘
+    entities.push(new Trap(0, 580, 1800, 20));
+}
+
 // --- Title Screen Logic ---
 let realStartBtn = { x: 780, y: 580, w: 20, h: 20 };
 let fakeStartBtn = { x: 300, y: 350, w: 200, h: 60 };
 
+// Stage Select Buttons
+let stageBtn1 = { x: 200, y: 280, w: 180, h: 80 };
+let stageBtn2 = { x: 420, y: 280, w: 180, h: 80 };
+
 function checkTitleInteraction(clickX, clickY) {
-    if (currentState !== STATES.TITLE) return;
-    
-    if (mouse.clicked || (clickX && clickY)) {
-        let cx = mouse.x;
-        let cy = mouse.y;
-        if (clickX) { cx = clickX * (CANVAS_WIDTH / canvas.clientWidth); cy = clickY * (CANVAS_HEIGHT / canvas.clientHeight); }
+    let cx = mouse.x;
+    let cy = mouse.y;
+    if (clickX) {
+        cx = clickX * (CANVAS_WIDTH / canvas.clientWidth);
+        cy = clickY * (CANVAS_HEIGHT / canvas.clientHeight);
+    }
 
-        if (cx > fakeStartBtn.x && cx < fakeStartBtn.x + fakeStartBtn.w &&
-            cy > fakeStartBtn.y && cy < fakeStartBtn.y + fakeStartBtn.h) {
-            
-            if (!titleTrapped) {
-                playSound('explosion');
-                shakeIntensity = 30;
-                titleTrapped = true; 
-                for(let i=0; i<50; i++) particles.push(new Particle(cx, cy, '#fff'));
+    // タイトル画面
+    if (currentState === STATES.TITLE) {
+        if (mouse.clicked || (clickX && clickY)) {
+            if (cx > fakeStartBtn.x && cx < fakeStartBtn.x + fakeStartBtn.w &&
+                cy > fakeStartBtn.y && cy < fakeStartBtn.y + fakeStartBtn.h) {
+
+                if (!titleTrapped) {
+                    playSound('explosion');
+                    shakeIntensity = 30;
+                    titleTrapped = true;
+                    for (let i = 0; i < 50; i++) particles.push(new Particle(cx, cy, '#fff'));
+                }
+                return;
             }
-            return;
-        }
 
-        if (cx > realStartBtn.x && cy > realStartBtn.y) {
-            currentState = STATES.PLAYING;
-            initLevel();
-            startBGM();
+            if (cx > realStartBtn.x && cy > realStartBtn.y) {
+                currentState = STATES.STAGE_SELECT;
+            }
+        }
+    }
+
+    // ステージ選択画面
+    if (currentState === STATES.STAGE_SELECT) {
+        if (mouse.clicked || (clickX && clickY)) {
+            // Stage 1
+            if (cx > stageBtn1.x && cx < stageBtn1.x + stageBtn1.w &&
+                cy > stageBtn1.y && cy < stageBtn1.y + stageBtn1.h) {
+                currentStage = 1;
+                currentState = STATES.PLAYING;
+                initLevel();
+                startBGM();
+            }
+            // Stage 2
+            if (cx > stageBtn2.x && cx < stageBtn2.x + stageBtn2.w &&
+                cy > stageBtn2.y && cy < stageBtn2.y + stageBtn2.h) {
+                currentStage = 2;
+                currentState = STATES.PLAYING;
+                initLevel();
+                startBGM();
+            }
         }
     }
 }
@@ -844,11 +1179,18 @@ function resetGame() {
     if (currentState === STATES.GAMEOVER) {
         currentState = STATES.PLAYING;
         // Re-init but keep checkpoint data
-        const savedSpawn = {...spawnPoint};
+        const savedSpawn = { ...spawnPoint };
         initLevel();
         spawnPoint = savedSpawn;
         player.x = spawnPoint.x;
         player.y = spawnPoint.y;
+    } else if (currentState === STATES.WIN) {
+        // ステージクリア！
+        if (currentStage === 1) {
+            saveStageUnlock(2);
+        }
+        currentState = STATES.STAGE_SELECT;
+        spawnPoint = { x: 50, y: 400 }; // スポーンリセット
     }
 }
 
@@ -863,14 +1205,14 @@ function update() {
     if (currentState === STATES.PLAYING) {
         player.update();
         entities.forEach(e => { if (e.update) e.update(); });
-        
+
         // Camera Follow - Look Ahead (Shift player to left third)
-        let targetX = player.x - CANVAS_WIDTH * 0.25; 
+        let targetX = player.x - CANVAS_WIDTH * 0.25;
         if (targetX < 0) targetX = 0;
         cameraX += (targetX - cameraX) * 0.1;
     }
-    
-    if (currentState === STATES.GAMEOVER && (touchInput.left || touchInput.right || touchInput.jump)) {
+
+    if ((currentState === STATES.GAMEOVER || currentState === STATES.WIN) && (touchInput.left || touchInput.right || touchInput.jump)) {
         resetGame();
     }
 
@@ -883,7 +1225,7 @@ function update() {
 
 function draw() {
     ctx.save();
-    
+
     let dx = (Math.random() - 0.5) * shakeIntensity;
     let dy = (Math.random() - 0.5) * shakeIntensity;
     ctx.translate(dx, dy);
@@ -895,30 +1237,62 @@ function draw() {
         ctx.fillStyle = '#fff';
         ctx.font = '40px Courier New';
         ctx.textAlign = 'center';
-        ctx.fillText("THE UNFAIR", CANVAS_WIDTH/2, 200);
+        ctx.fillText("THE UNFAIR", CANVAS_WIDTH / 2, 200);
         ctx.font = '20px Courier New';
-        ctx.fillText("Mobile V3 + Checkpoints", CANVAS_WIDTH/2, 230);
-        ctx.fillText(`Deaths: ${deathCount}`, CANVAS_WIDTH/2, 270);
+        ctx.fillText("Mobile V3 + Checkpoints", CANVAS_WIDTH / 2, 230);
+        ctx.fillText(`Deaths: ${deathCount}`, CANVAS_WIDTH / 2, 270);
 
         if (!titleTrapped) {
             ctx.fillStyle = '#444';
             ctx.fillRect(fakeStartBtn.x, fakeStartBtn.y, fakeStartBtn.w, fakeStartBtn.h);
             ctx.fillStyle = '#fff';
-            ctx.fillText("TAP TO START", CANVAS_WIDTH/2, 385);
+            ctx.fillText("TAP TO START", CANVAS_WIDTH / 2, 385);
         } else {
             ctx.fillStyle = 'red';
-            ctx.fillText("罠に決まってるでしょ。", CANVAS_WIDTH/2, 385);
+            ctx.fillText("罠に決まってるでしょ。", CANVAS_WIDTH / 2, 385);
         }
-        
+
         ctx.fillStyle = '#2a2a2a';
         ctx.fillRect(realStartBtn.x, realStartBtn.y, realStartBtn.w, realStartBtn.h);
         ctx.fillStyle = '#555';
         ctx.font = '10px sans-serif';
         ctx.fillText("start", realStartBtn.x, realStartBtn.y - 5);
 
+    } else if (currentState === STATES.STAGE_SELECT) {
+        ctx.fillStyle = '#fff';
+        ctx.font = '30px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText("SELECT STAGE", CANVAS_WIDTH / 2, 150);
+        ctx.fillText(`Total Deaths: ${deathCount}`, CANVAS_WIDTH / 2, 500);
+
+        // Stage 1 Button
+        ctx.fillStyle = stageUnlocks[1] ? '#444' : '#222';
+        ctx.fillRect(stageBtn1.x, stageBtn1.y, stageBtn1.w, stageBtn1.h);
+        ctx.strokeStyle = '#fff';
+        ctx.strokeRect(stageBtn1.x, stageBtn1.y, stageBtn1.w, stageBtn1.h);
+        ctx.fillStyle = '#fff';
+        ctx.font = '24px Courier New';
+        ctx.fillText("STAGE 1", stageBtn1.x + stageBtn1.w / 2, stageBtn1.y + 45);
+        ctx.font = '14px Courier New';
+        ctx.fillText("The Beginning", stageBtn1.x + stageBtn1.w / 2, stageBtn1.y + 70);
+
+        // Stage 2 Button
+        ctx.fillStyle = stageUnlocks[2] ? '#444' : '#222';
+        ctx.fillRect(stageBtn2.x, stageBtn2.y, stageBtn2.w, stageBtn2.h);
+        ctx.strokeStyle = stageUnlocks[2] ? '#fff' : '#555';
+        ctx.strokeRect(stageBtn2.x, stageBtn2.y, stageBtn2.w, stageBtn2.h);
+        ctx.fillStyle = stageUnlocks[2] ? '#fff' : '#555';
+        ctx.font = '24px Courier New';
+        ctx.fillText("STAGE 2", stageBtn2.x + stageBtn2.w / 2, stageBtn2.y + 45);
+        ctx.font = '14px Courier New';
+        ctx.fillText("Betrayal", stageBtn2.x + stageBtn2.w / 2, stageBtn2.y + 70);
+
     } else {
         ctx.save();
         ctx.translate(-Math.floor(cameraX), 0);
+
+        // 背景を描画しないと前のフレームが残る可能性があるため、クリア済みだが一応
+        // (既に行頭で黒塗りされているのでOK)
 
         ctx.fillStyle = '#880000';
         deathHistory.forEach(pos => {
@@ -935,7 +1309,7 @@ function draw() {
             ctx.fillRect(player.x + 4, player.y + 4, 4, 4);
             ctx.fillRect(player.x + 12, player.y + 4, 4, 4);
         }
-        
+
         particles.forEach(p => p.draw());
 
         ctx.restore();
@@ -943,32 +1317,32 @@ function draw() {
         // UI Layer
         if (currentState === STATES.GAMEOVER) {
             ctx.fillStyle = 'rgba(0,0,0,0.7)';
-            ctx.fillRect(0,0,CANVAS_WIDTH, CANVAS_HEIGHT);
+            ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
             ctx.fillStyle = 'white';
             ctx.font = '30px Courier New';
             ctx.textAlign = 'center';
             const lines = lastMockery.split('\n');
             lines.forEach((line, i) => {
-                ctx.fillText(line, CANVAS_WIDTH/2, CANVAS_HEIGHT/2 + i * 40);
+                ctx.fillText(line, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + i * 40);
             });
             ctx.font = '20px Courier New';
-            ctx.fillText("Tap / Space to Retry", CANVAS_WIDTH/2, CANVAS_HEIGHT/2 + 100);
+            ctx.fillText("Tap / Space to Retry", CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 100);
         }
-        
+
         if (currentState === STATES.WIN) {
             ctx.fillStyle = 'yellow';
             ctx.font = '40px Courier New';
             ctx.textAlign = 'center';
-            ctx.fillText("YOU ESCAPED!", CANVAS_WIDTH/2, CANVAS_HEIGHT/2);
+            ctx.fillText("YOU ESCAPED!", CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
         }
 
         // --- Mobile Controls Visualizer (Updated) ---
         // Left Zone
         ctx.fillStyle = touchInput.left ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)';
-        ctx.fillRect(0, CANVAS_HEIGHT - 120, CANVAS_WIDTH * 0.225, 120); 
+        ctx.fillRect(0, CANVAS_HEIGHT - 120, CANVAS_WIDTH * 0.225, 120);
         ctx.fillStyle = touchInput.right ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)';
         ctx.fillRect(CANVAS_WIDTH * 0.225, CANVAS_HEIGHT - 120, CANVAS_WIDTH * 0.225, 120);
-        
+
         ctx.fillStyle = 'rgba(255,255,255,0.5)';
         ctx.font = '30px monospace';
         ctx.textAlign = 'center';
@@ -981,7 +1355,7 @@ function draw() {
         ctx.moveTo(CANVAS_WIDTH * 0.225, CANVAS_HEIGHT - 120);
         ctx.lineTo(CANVAS_WIDTH * 0.225, CANVAS_HEIGHT);
         ctx.stroke();
-        
+
         // Right Zone (Jump)
         ctx.fillStyle = touchInput.jump ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)';
         ctx.fillRect(CANVAS_WIDTH * 0.45, CANVAS_HEIGHT - 120, CANVAS_WIDTH * 0.55, 120);
@@ -1006,7 +1380,7 @@ function draw() {
         try {
             const imageData = ctx.getImageData(0, sliceY, CANVAS_WIDTH, sliceHeight);
             ctx.putImageData(imageData, sliceOffset, sliceY);
-        } catch(e) {}
+        } catch (e) { }
     }
 }
 
